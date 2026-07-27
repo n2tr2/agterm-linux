@@ -8,5 +8,6 @@
     {"name": "write_clipboard_cb", "borrowedData": "content array and MIME/data strings", "boundary": "GLib main queue and prompt completion", "disposition": "matching text copied synchronously before queue hop; surface retained"},
     {"name": "wakeup_cb", "borrowedData": "none", "boundary": "GLib idle source", "disposition": "no borrowed callback data captured"}
   ],
+  "scope": "buffer lifetime only (could a borrowed pointer dangle?) — NOT payload semantics. What a pointer MEANS when its companion length is 0 was audited separately on 2026-07-26 against the then-current Linux pin 11b9a6ef17e21b89e2ef14dd786992cc5577b69b; see docs/plans/20260726-linux-link-hover-cursor-latch.md, which found and fixed two length-ignoring reads (mouse_over_link, readSelection).",
   "result": "No borrowed C string or array crosses an actor, GLib, or asynchronous callback boundary without a synchronous Swift-owned copy."
 }

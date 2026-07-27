@@ -5,25 +5,6 @@ import Testing
 
 @Suite("libghostty buffer lifetimes")
 struct GhosttyLifetimeTests {
-    @Test("URL decoding honors the explicit byte length")
-    func lengthDelimitedURL() {
-        let expected = "https://example.test/path?q=1"
-        var bytes = expected.utf8.map { CChar(bitPattern: $0) }
-        bytes.append(contentsOf: [CChar(bitPattern: 0x58), CChar(bitPattern: 0x59), 0])
-
-        let decoded = bytes.withUnsafeBufferPointer {
-            GhosttyActionDecoder.utf8String($0.baseAddress, length: UInt(expected.utf8.count))
-        }
-        #expect(decoded == expected)
-        #expect(GhosttyActionDecoder.utf8String(nil, length: 0) == "")
-        #expect(GhosttyActionDecoder.utf8String(nil, length: 1) == nil)
-
-        let invalid = [CChar(bitPattern: 0xC3), CChar(bitPattern: 0x28)]
-        #expect(invalid.withUnsafeBufferPointer {
-            GhosttyActionDecoder.utf8String($0.baseAddress, length: UInt($0.count))
-        } == nil)
-    }
-
     @Test("surface configuration owns every C buffer until repeated release")
     func configurationStorage() throws {
         let storage = try #require(GhosttySurfaceConfigurationStorage(

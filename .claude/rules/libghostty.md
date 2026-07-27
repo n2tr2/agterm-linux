@@ -9,10 +9,41 @@ paths:
   - "agterm/Views/SplitRatioAccessor.swift"
   - "agterm/Views/TerminalView.swift"
   - "agterm/Views/TerminalSearchBar.swift"
+  - "agterm-linux/Sources/AgtermLinux/Ghostty*.swift"
 ---
 
 ## libghostty gotchas
 
+- **A pointer+length action payload is LENGTH-authoritative — the pointer is never null, even on a clear.**
+  libghostty ends a hyperlink hover by sending `mouse_over_link` with `.url = ""`, not a null pointer:
+  `MouseOverLink.cval` passes the `.ptr` of a non-optional `[:0]const u8`, which addresses the NUL
+  terminator, so the clear arrives as `url = <non-null>, len = 0`.
+  A `url != nil` test is therefore a TAUTOLOGY.
+  That is how the Linux port's `mouseOverLink` flag latched `true` on the first hover-out and pinned the hand
+  cursor for the surface's lifetime — the cursor precedence
+  (`GhosttySurfaceCursor.name(mouseVisible:overLink:shapeName:)`) ranks that flag above the last
+  `mouse_shape`, so every later shape update, OSC 22 included, was computed and discarded.
+  Decode and test the LENGTH through the `GhosttyActionDecoder` seam
+  (`agterm-linux/Sources/AgtermLinux/GhosttyActionDecoder.swift`), never `!= nil` and never `String(cString:)`:
+  `utf8String(_:length:)` (length-0 → `""`), `lossyUTF8String(_:length:)` (length-0 → nil, invalid UTF-8 →
+  U+FFFD; backs `readSelection`/`session.copy`, and `readScreenText`/`session.text` via a trailing `?? ""`
+  for its blank-screen-reads-as-`""` contract), and `linkHoverActive` — whose payload overload takes the
+  whole `ghostty_action_mouse_over_link_s`, so the field read is asserted host-free rather than at the
+  untestable action arm.
+  The header spells these lengths inconsistently — `mouse_over_link.len` and `key_table.activate.len` are
+  `size_t` (imported as `Int`), `open_url.len` and `text_len` are `uintptr_t` (imported as `UInt`) — so a
+  `size_t` payload needs `UInt(bitPattern:)` to reach the shared helpers.
+  `set_title.title` and `pwd.pwd` carry NO companion length and are correctly read with `String(cString:)`.
+  Contract for whoever adds a `GHOSTTY_ACTION_KEY_TABLE` arm (the port has none today): `activate.len` is
+  authoritative and `name` is not NUL-terminated by contract.
+  The sibling `GhosttySurfaceCursor.shapeName(for:)` owns the other half of the Linux cursor decision — the
+  `ghostty_action_mouse_shape_e` → GTK named-cursor map, one-to-one because ghostty's shapes are already CSS
+  cursor names.
+  Keep it EXHAUSTIVE over the header enum: `GHOSTTY_MOUSE_SHAPE_DEFAULT` (the arrow) was the one constant the
+  old inline switch missed, so it fell into the `text` fallback and every mouse-reporting TUI — plus an
+  explicit `printf '\e]22;default\a'` — drew an I-beam where upstream's GTK apprt draws the arrow.
+  The unit test asserts the whole table and pins `GHOSTTY_MOUSE_SHAPE_ZOOM_OUT.rawValue` as its upper bound,
+  so a `GHOSTTY_REV` bump that adds a shape fails loudly instead of silently landing in the fallback.
 - **Chrome colors track the terminal theme; `config_get` can't read the optional `selection-*` keys.**
   The non-terminal chrome (sidebar row text + icons, title-bar text + buttons,
   the bottom add-buttons) uses the theme's colors instead of system label colors:

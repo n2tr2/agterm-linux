@@ -1622,9 +1622,22 @@ def sidebar_does_not_widen(app, baseline, description):
 
 
 def sidebar_row_fits(app, row, bounds, expected_images, expected_labels):
-    """Every part of one sidebar row, against the column as it is right now."""
+    """Every VISIBLE PART of one sidebar row, against the column as it is right now.
+
+    ⚠️ The row's OWN box is deliberately NOT contained here, and restoring that check will make this
+    scenario fail on some libadwaita versions for a clip nobody can see. A `GtkListBoxRow`'s AT-SPI
+    extents include the Adwaita `.navigation-sidebar > row` margin, which is empty space, and the
+    row's inset inside the column is theme-dependent: measured at the same 220px column, the row
+    starts 19px in on libadwaita 1.9.2 (Arch) but 28px in on Ubuntu noble, so the same 194px row box
+    ends 5px clear of the column on one and 2px past it on the other. Those 2px are margin — the
+    badge, the rightmost thing actually drawn, still ends ~6px inside the row's own right edge.
+
+    The parts below are the real gate, and the reported symptom: the bug pushed the status glyph, the
+    star and the badge OUT of the viewport, and each of those is checked individually. A row whose
+    label stopped ellipsizing overflows by hundreds of pixels, not two, so the parts catch it — the
+    fail-first run reported the 40-character name at 658px against a 560px column.
+    """
     column = sidebar_column_now(app)
-    sidebar_fits(column, bounds, f"the sidebar row {bounds.width}px wide")
     assert bounds.width >= column.width * SIDEBAR_MIN_ROW_FRACTION, (
         f"sidebar row is implausibly narrow for a {column.width}px column: width={bounds.width}")
     parts = [(item, box) for item in descendants(row) if (box := window_extents(item))]

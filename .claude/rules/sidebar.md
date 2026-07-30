@@ -445,7 +445,19 @@ paths:
   session is what makes the reconstruction work.
   The parts that run everywhere stay HARD: the 400px restore on launch, and a post-quit re-read of the
   record asserting `sidebarWidth` is still 400 (cover for the cap ever being persisted again).
-  Five traps it encodes: the inside-the-scroller one above; the re-read-the-column one above; the
+  A sixth trap, found when CI first ran this scenario: containment is asserted on the row's PARTS, never
+  on the `GtkListBoxRow`'s own box.
+  A row's AT-SPI extents include the Adwaita `.navigation-sidebar > row` margin, which is empty space, and
+  the row's inset inside the column is theme-dependent — at the same 220px column the row starts 19px in on
+  libadwaita 1.9.2 (Arch) and 28px in on Ubuntu noble, so an identical ~195px row box ends 5px clear on one
+  host and 2px past on the other.
+  Those 2px are margin, not chrome: the badge is the rightmost thing drawn and still ends ~6px inside the
+  row's own right edge.
+  Do not "restore" a row-box containment check to tighten the gate — it fails on some libadwaita versions for
+  a clip nobody can see, and the parts check is both the reported symptom and strictly sharper (a label that
+  stopped ellipsizing overflows by hundreds of pixels; the breadcrumb experiment reports 1065px against a
+  560px column).
+  Five more traps it encodes: the inside-the-scroller one above; the re-read-the-column one above; the
   un-pinnable scale; the badge it drives is a one-digit `1`, ~30px narrower at 20pt than the `99+` worst
   case, which is covered by widget measurement (`LinuxPolicyTests`) rather than by this scenario; and
   driving the decorations REBUILDS the row, which GTK allocates only while the window renders — `launch()`

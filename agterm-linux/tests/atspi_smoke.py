@@ -1525,9 +1525,25 @@ SIDEBAR_DEFAULT_WIDTH = 220
 # Launch 4's seeded request: comfortably above the pin, so a column at this width can only be the
 # restored request and never the floor.
 SIDEBAR_REQUESTED_WIDTH = 400
-# How far past the column's right edge a part may sit before it counts as clipped. AT-SPI extents are
-# integers and `gtk_paned_set_position` takes an int, so an exact-fit widget can report one pixel over.
-SIDEBAR_EDGE_SLACK = 1
+# How far past the column's right edge a part may sit before it counts as clipped.
+#
+# ⚠️ This is theme-inset tolerance, NOT a fudge factor, and shrinking it back to 1 will make this
+# scenario fail on Ubuntu noble for a clip nobody can see. A widget's AT-SPI extents include its own
+# CSS margin and padding, and how far a TRAILING widget's box sits from the scroller's content edge
+# varies by libadwaita version. Measured at the same 220px column, with the same tree:
+#
+#   host                     add-session button          decorated row box
+#   libadwaita 1.9.2 (Arch)  ends exactly ON the edge     ends 5px clear
+#   Ubuntu noble (CI)        ends 5px past                ends 2px past
+#
+# So the trailing button lands on the boundary with ZERO margin on one host — any theme that insets
+# the header row differently tips it over. The bytes past the edge are padding: the `+` icon is
+# centred in a ~35px button, so 5px off its right edge clips no glyph.
+#
+# It costs nothing in discriminating power, because the regression this gate exists for overflows by
+# two orders of magnitude more: dropping the breadcrumb's ellipsize reports a part 1065px wide against
+# a 560px column, and dropping the pill's put it 190px past. Nothing real lands in the 1..8 band.
+SIDEBAR_EDGE_SLACK = 8
 # A row narrower than this fraction of the column was caught mid-layout rather than laid out inside it:
 # it separates "the sidebar truncates properly" from "nothing has been allocated yet".
 SIDEBAR_MIN_ROW_FRACTION = 0.5

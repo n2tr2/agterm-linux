@@ -445,18 +445,25 @@ paths:
   session is what makes the reconstruction work.
   The parts that run everywhere stay HARD: the 400px restore on launch, and a post-quit re-read of the
   record asserting `sidebarWidth` is still 400 (cover for the cap ever being persisted again).
-  A sixth trap, found when CI first ran this scenario: containment is asserted on the row's PARTS, never
-  on the `GtkListBoxRow`'s own box.
-  A row's AT-SPI extents include the Adwaita `.navigation-sidebar > row` margin, which is empty space, and
-  the row's inset inside the column is theme-dependent — at the same 220px column the row starts 19px in on
-  libadwaita 1.9.2 (Arch) and 28px in on Ubuntu noble, so an identical ~195px row box ends 5px clear on one
-  host and 2px past on the other.
-  Those 2px are margin, not chrome: the badge is the rightmost thing drawn and still ends ~6px inside the
-  row's own right edge.
-  Do not "restore" a row-box containment check to tighten the gate — it fails on some libadwaita versions for
-  a clip nobody can see, and the parts check is both the reported symptom and strictly sharper (a label that
-  stopped ellipsizing overflows by hundreds of pixels; the breadcrumb experiment reports 1065px against a
-  560px column).
+  A sixth trap, found the first time CI ran this scenario, and it cost two red builds: **containment
+  compares WIDGET BOXES against the SCROLLER box, and those two are inset differently on different
+  libadwaita versions.**
+  A widget's AT-SPI extents include its own CSS margin and padding, so a widget that HUGS the column's
+  trailing edge lands on the boundary with no margin at all.
+  Measured at the same 220px column with the same tree — libadwaita 1.9.2 (Arch) vs Ubuntu noble (CI):
+  the add-session `+` button ends exactly ON the edge on the former and 5px past it on the latter, and the
+  decorated row box ends 5px clear on the former and 2px past on the latter.
+  Neither is a visible clip: the `+` icon is centred in a ~35px button so 5px off its right edge cuts only
+  padding, and the badge still ends ~6px inside the row's own right edge.
+  Two things follow, and undoing either will turn CI red again for a clip nobody can see.
+  Containment is asserted on the row's PARTS and never on the `GtkListBoxRow`'s own box, which is mostly
+  Adwaita margin; and `SIDEBAR_EDGE_SLACK` is 8px of THEME-INSET tolerance rather than the 1px of integer
+  rounding it started as.
+  That costs no discriminating power, because a real regression overflows by two orders of magnitude more —
+  dropping the breadcrumb's ellipsize reports a part 1065px wide against a 560px column, and dropping the
+  pill's put it 190px past — so nothing real lands in the 1..8 band.
+  ⚠️ The product side is NOT implicated here: the floor genuinely does follow the header.
+  Verified by fattening the `+` with a user `gtk.css` `min-width`, which moved the floor 220 → 248.
   Five more traps it encodes: the inside-the-scroller one above; the re-read-the-column one above; the
   un-pinnable scale; the badge it drives is a one-digit `1`, ~30px narrower at 20pt than the `99+` worst
   case, which is covered by widget measurement (`LinuxPolicyTests`) rather than by this scenario; and

@@ -50,6 +50,7 @@ final class AppController {
     var sessionPickerShowsAttention = false
     let sidebarBox: OpaquePointer    // GtkBox holding per-workspace sections
     var splitView: OpaquePointer!    // root GtkPaned (collapsible, resizable sidebar)
+    var sidebarWidthFloor = AppStore.sidebarWidthDefault   // see refreshSidebarWidthFloor()
 
     // Command palette (Ctrl+Shift+P)
     var paletteWindow: OpaquePointer?
@@ -196,7 +197,10 @@ final class AppController {
         sidebarScroller = scroller
         gtk_widget_add_css_class(W(scroller), "agterm-sidebar")   // theme-bg tint target
         gtk_scrolled_window_set_child(scroller, W(sidebarBox))
-        gtk_widget_set_size_request(W(scroller), 240, -1)
+        // No width request here on purpose: the sidebar's minimum is ONE constraint, and it lives on
+        // the paned start child (`sidebarWidthFloor`, applied in `refreshSidebarWidthFloor`).
+        // A second request here would silently win over it, which is how the old hardcoded 240 came to
+        // override both `gtk_paned_set_position` and the store's clamp.
         let sidebarToolbar = OpaquePointer(adw_toolbar_view_new())
         adw_toolbar_view_add_top_bar(sidebarToolbar, W(sidebarHeader))
         adw_toolbar_view_set_content(sidebarToolbar, W(scroller))
@@ -686,35 +690,6 @@ final class AppController {
         resumeAutoFollow()
         rebuildAfterRename()
         focusedSurface()?.grabFocus()
-    }
-
-    /// A name label (session or workspace) when not renaming: a plain GtkLabel that selects on single
-    /// click (the row/header handles that) and enters rename on DOUBLE click — or a focused GtkEntry when
-    /// this id is being renamed.
-    func makeNameWidget(id: UUID, text: String, isWorkspace: Bool) -> OpaquePointer? {
-        if renaming?.id == id {
-            guard let entry = op(gtk_entry_new()) else { return nil }
-            text.withCString { gtk_editable_set_text(entry, $0) }
-            gtk_widget_set_hexpand(W(entry), 1)
-            renameEntry = entry
-            connect(entry, "activate", unsafeBitCast(onRenameCommit as @convention(c) (OpaquePointer?, gpointer?) -> Void, to: GCallback.self), RAW(entry))
-            let kc = gtk_event_controller_key_new()
-            connect(kc, "key-pressed", unsafeBitCast(onRenameKey as @convention(c) (OpaquePointer?, UInt32, UInt32, UInt32, gpointer?) -> gboolean, to: GCallback.self))
-            gtk_widget_add_controller(W(entry), kc)
-            let fc = gtk_event_controller_focus_new()
-            connect(fc, "leave", unsafeBitCast(onRenameCommit as @convention(c) (OpaquePointer?, gpointer?) -> Void, to: GCallback.self), RAW(entry))
-            gtk_widget_add_controller(W(entry), fc)
-            return entry
-        }
-        guard let label = op(gtk_label_new(text)) else { return nil }
-        gtk_label_set_xalign(label, 0)
-        gtk_widget_set_hexpand(W(label), 1)
-        nameLabels[label] = (id, isWorkspace)
-        let dbl = gtk_gesture_click_new()
-        gtk_gesture_single_set_button(dbl, 1)   // left double-click only; right-click goes to the context menu
-        connect(dbl, "pressed", unsafeBitCast(onNameDoubleClick as @convention(c) (OpaquePointer?, Int32, Double, Double, gpointer?) -> Void, to: GCallback.self), RAW(label))
-        gtk_widget_add_controller(W(label), dbl)
-        return label
     }
 
     func reorderActiveSession(_ dir: ReorderDirection) {

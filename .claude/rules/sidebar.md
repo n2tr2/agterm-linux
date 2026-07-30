@@ -10,10 +10,448 @@ paths:
   - "agtermUITests/ReorderUITests.swift"
   - "agtermUITests/FlaggedViewUITests.swift"
   - "agtermUITests/FocusWorkspaceUITests.swift"
+  - "agterm-linux/Sources/AgtermLinux/AppControllerSidebar*.swift"
+  - "agterm-linux/Sources/AgtermLinux/LinuxSidebarPolicy.swift"
 ---
 
 ## Sidebar
 
+- **Linux port — the sizing contract: any sidebar widget that can hold arbitrary-length USER text must be
+  able to report a SMALL minimum width.**
+  A GTK4 `GtkLabel` with neither ellipsize nor wrap reports its WHOLE text as its MINIMUM width, and GTK
+  never allocates below a minimum — so an un-ellipsized name made the row overflow the sidebar's
+  `GtkScrolledWindow`, hard-cutting the name mid-glyph (no `…`) and pushing the status glyph, flag star,
+  and unseen badge past the viewport edge.
+  It broke EVERY row, not just the long-named one: the scroller's child is a vertical `GtkBox` whose
+  minimum is the max over its children and which allocates its full width to each of them,
+  so one long name lays every row out at the widest row's width.
+  The GTK row already reproduced the macOS LAYOUT — the name is the only `hexpand` child and the trailing
+  glyphs hug — so only the truncation half was missing, and **no `hexpand` change is ever needed here**.
+  The treatment depends on the KIND of text, and getting that distinction wrong is the trap:
+  - **user text ELLIPSIZES** — `gtk_label_set_ellipsize(label, PANGO_ELLIPSIZE_END)` on `makeNameWidget`'s
+    plain-label branch (which covers session rows AND workspace headers), on `makeRow`'s flagged-view
+    breadcrumb, and on the focus pill.
+    `END`, not the `MIDDLE` that `makePaletteRow` uses: a palette title disambiguates at its TAIL
+    ("Move Session to <workspace>") while a session or workspace name disambiguates at its HEAD,
+    and `END` matches the macOS `.byTruncatingTail` on the very same names.
+  - **fixed instructional text WRAPS** — the flagged-empty hint takes `gtk_label_set_wrap(hint, 1)` and
+    never ellipsize, because truncating an instruction to `No flagged sessi…` is worse than the bug.
+    Wrapping drops its minimum from its longest LINE to its longest WORD: measured under the sidebar CSS,
+    156 / 225 / 346px unwrapped against 51 / 74 / 113px wrapped at 9 / 13 / 20pt.
+    That wrap is load-bearing at the floor rather than defensive — at the default 13pt the unwrapped hint's
+    225px minimum is already 5px WIDER than the 220px floor, and its 346px at 20pt was wider than even the
+    old 240px request, so the empty flagged view clipped at large sidebar fonts before this change.
+    No explicit wrap mode is needed (`PANGO_WRAP_WORD` is the default and never cuts mid-word), and its
+    `GTK_JUSTIFY_CENTER` still reads correctly once wrapped — 3 centered lines at the 220px floor,
+    2 at 240px.
+  - **hugging trailing glyphs get NOTHING**, and the unseen badge in particular **must NOT be ellipsized**
+    even though it is a `GtkLabel` and so pattern-matches the sites that do need it.
+    Its natural width is part of the very chrome the sidebar floor below is derived from: under the sidebar
+    CSS a `99+` badge measures 27 / 39 / 60px at 9 / 13 / 20pt — the +33 / +45 / +66 badge term in the
+    floor's derivation, once the box's 6px spacing is added — and a one-digit `1` measures 14 / 19 / 30px.
+    With `PANGO_ELLIPSIZE_END` the same `99+` collapses to a 10 / 14 / 22px minimum, i.e. to a bare `…`,
+    which would silently invalidate the floor.
+    `appendSection`'s non-workspace section header (the fixed `"Flagged"` literal, min = nat = 48 / 69 /
+    106px at 9 / 13 / 20pt) needs nothing either — it can never be the constraint.
+- **Linux port — two label sites that are not one-liners.**
+  The focus pill gets an EXPLICIT `gtk_label_new` + `gtk_button_set_child` rather than
+  `gtk_button_set_label` + an ellipsize on `gtk_button_get_child`: the internal child a button builds for a
+  plain label is not part of GTK's contract, so a `GtkLabel` setter on it is the same unguarded-cast hazard
+  the `breadcrumb` guard below exists to avoid — and the explicit form is shorter anyway.
+  Ellipsis is a RENDER-time effect only, and a button whose child is a `GtkLabel` still exposes that text as
+  its accessible name, so the full string round-trips and the AT-SPI `named(...)` lookups keep working —
+  the clipping scenario now focuses a workspace and finds the pill BY that name, which pins THAT half:
+  a swap that broke the accessible name would fail the lookup.
+  The pill's ELLIPSIZE is a separate claim and is pinned separately, by the no-growth gate described in the
+  scenario bullet below — the containment check beside it cannot pin it, because the floor follows the
+  content and an un-ellipsized pill widens the column instead of overflowing it.
+  What the swap DOES give up is `gtk_button_get_label`, which returns NULL for this button; nothing reads
+  it today, and anything that wants the text must go through the child label or the accessible name.
+  In `makeRow`, label-only calls must be guarded on the FULL `flaggedView && renaming?.id != s.id`
+  condition that CHOSE the plain label — hoisted into the `breadcrumb` binding so the two cannot drift —
+  because the weaker `if flaggedView` also reaches the `GtkEntry` that `makeNameWidget` returns during a
+  rename and raises `gtk_label_set_xalign: assertion 'GTK_IS_LABEL (self)' failed`.
+  ⚠️ **KNOWN GAP: that critical has NO automated gate, and cannot cheaply get one.**
+  `launch()` in `atspi_smoke.py` sends the app's stdout AND stderr to `DEVNULL`, so no scenario can observe
+  a GTK critical at all; capturing it would be a one-line change to a helper all fourteen scenarios share.
+  The reason it was not made is the OTHER half: nothing the suite can drive reaches this code path.
+  An inline rename inside the flagged view needs `renaming?.id == s.id` while `sidebarMode == .flagged`, and
+  the flagged breadcrumb is a PLAIN `gtk_label_new` with no double-click gesture, so the only routes in are
+  the `rename_session` keybind and the palette entry, both of which land on
+  `AppController.startRenameActive` — both KEYBOARD, and there is no `g_action` for either (the app
+  exports only `reveal` and the window-scoped `preferences`).
+  Adding an `xdotool` keypress here would also break the maintainer's ONLY local way to run this scenario
+  (`env -u HYPRLAND_INSTANCE_SIGNATURE …` on Wayland, where the xdotool focus path cannot address a native
+  Wayland window).
+  It is covered instead by the plan's Task 9 substitute (A): the offscreen C probe drove rename-in-flagged-view
+  with a `g_log` handler counting criticals — 0 after the fix, exactly 2 before it
+  (`invalid cast from 'GtkEntry' to 'GtkLabel'` and the `gtk_label_set_xalign` assertion).
+  If a scenario ever needs keyboard input here anyway, capture stderr in `launch()` at the same time and
+  assert on `Gtk-CRITICAL` / `GLib-GObject-CRITICAL` — but re-run the WHOLE suite, since every scenario
+  would start observing criticals it currently discards.
+- **Linux port — the sidebar's minimum width is ONE derived value,
+  `AppController.sidebarWidthFloor`, on the paned START CHILD.**
+  It replaced BOTH the shared `AppStore.sidebarWidthMin` (160) and a hardcoded
+  `gtk_widget_set_size_request(scroller, 240, -1)`.
+  Two constraints was one too many: the 240 silently won, so the 160 clamp in `captureSidebarWidth` never
+  fired and `gtk_paned_set_position(AppStore.sidebarWidthDefault)` (220) was pushed straight back up to
+  240 and re-persisted there — every real window record on disk held `"sidebarWidth": 240`.
+  **Never add a second `size_request` anywhere on the sidebar widget tree**; a request on the scroller
+  wins over the paned child's and reintroduces exactly that drift.
+  Only the PINNING is host-free (`LinuxSidebarPolicy.sidebarWidthFloor(measuredContentMinimum:)`,
+  unit-covered in `LinuxPolicyTests`); the MEASUREMENT itself needs a GTK widget and therefore lives in
+  the app target's `AppControllerSidebarSplit.refreshSidebarWidthFloor`, which measures, pins, pushes the
+  result onto the start child, and re-lays the divider out.
+  The short version is that the floor is PINNED to `AppStore.sidebarWidthDefault` (220) so the default
+  width stays REACHABLE, and rises above it only where the measured content minimum demands it.
+  The shared `AppStore.sidebarWidthMin` was deliberately NOT raised: it is `agtermCore`, so a Linux chrome
+  measurement must never move the macOS floor.
+  Only the LOWER bound is Linux-owned; `AppStore.sidebarWidthMax` (560) stays shared.
+- **Linux port — the floor is MEASURED off the live sidebar, never modelled.**
+  `refreshSidebarWidthFloor` calls `gtk_widget_measure(sidebarBox, GTK_ORIENTATION_HORIZONTAL, …)` at the
+  END of every `rebuildSidebar`, so the number always matches the widgets that exist.
+  A fitted line was tried first and REPLACED: the row minimum depends on the theme's row padding, the icon
+  set, the desktop's text scaling (`applySidebarFontSize` emits CSS `pt` and GTK resolves `pt` through
+  `gtk-xft-dpi`, so GNOME's "Large Text" widens the row exactly like a bigger sidebar font — 16pt at 1.25
+  and 20pt at 1.0 both measure 210px), and — the case that killed the model — the font FAMILY resolved
+  from `gtk-font-name`, which the sidebar CSS never sets.
+  Same fully decorated row at 20pt / scale 1.0: 210px in Noto Sans, 214 in Cantarell, 216 in Liberation
+  Sans, but **229 in DejaVu Sans**, the default sans on many distros — 9px past a line fitted to this
+  box's font, i.e. the reported clipping, smaller.
+  Measuring is right for every family, theme and icon set with nothing to keep calibrated, and it deleted
+  both `decoratedRowMinimum` and `AppController.textScaleFactor()`.
+  Three consequences to keep in mind.
+  (1) A measure taken WITHOUT rebuilding is stale for a pure CSS font-size reload — GTK revalidates a CSS
+  node on the next frame, so `gtk_widget_measure` straight after `gtk_css_provider_load_from_string` still
+  reports the OLD size (GTK 4.22.4).
+  That is why `applySidebarFontSize` does NOT refresh the floor and both Settings paths that change the
+  sidebar font (`setSidebarFontSize`, `resetWindowAppearance`) call it and then `rebuildSidebar`.
+  A `gtk-xft-dpi` change, by contrast, IS visible immediately, because GtkSettings' own `notify` class
+  closure updates the font map before any connected handler runs.
+  (2) A live text-scale change must re-measure: `App.swift` connects `notify::gtk-xft-dpi` and
+  `notify::gtk-font-name` on `gtk_settings_get_default()` once, app-wide (the same shape as the
+  `notify::dark` observer), and rebuilds every window's sidebar.
+  Without it, toggling GNOME "Large Text" mid-session left the floor where it was and the sidebar clipped
+  for the rest of the session — measured 210 → 230px of required column against a 220px request.
+  When the measurement lands above 220 the floor follows it exactly, with NO name allowance on top: the
+  correct requirement at large text is only that the decorated chrome fit INSIDE the floor, so the glyphs
+  stay whole and the name simply truncates harder — deriving an allowance there instead would answer
+  "I cannot narrow the sidebar" by making the sidebar LESS narrowable.
+  (3) The `sidebarBox` measure is not the whole column.
+  The floor is pushed onto the paned START CHILD and the `GtkScrolledWindow` sits between them, so a
+  vertical scrollbar that is NOT an overlay indicator claims real width before the box is allocated any —
+  `refreshSidebarWidthFloor` therefore adds `AppController.sidebarScrollbarOverhead()` to the measurement.
+  Measured on GTK 4.22.4 with this exact widget shape: with `gtk-overlay-scrolling` FALSE a 15px bar
+  shrank an 84px viewport to 69 and carried the row's trailing badge exactly 15px past the edge — the same
+  clipping, 15px further in.
+  It is harmless only while the floor is PINNED (39px of slack at 13pt) and the slack reaches zero exactly
+  at the large font × text scale where the floor follows the measurement instead, i.e. the population
+  Decision A deliberately serves.
+  The overhead is ZERO in the DEFAULT configuration (overlay scrolling on, the bar floats over the content
+  and takes no layout width), which is why it is CONDITIONAL on the setting rather than a flat constant:
+  adding it unconditionally would widen the floor for everyone to buy nothing, and at 20pt it would push a
+  210px measurement over the 220px pin.
+  The setting is LIVE, so `App.swift` observes `notify::gtk-overlay-scrolling` next to `gtk-xft-dpi` and
+  `gtk-font-name`.
+  ⚠️ **Do NOT measure the LIVE scroller's `gtk_scrolled_window_get_vscrollbar` there.**
+  Its width is CSS-ANIMATED across the setting change, so inside the `notify` handler — and still one idle
+  turn later — it reports the OLD 6px indicator width and only settles at 15px several main-loop turns on,
+  which would bake the stale number straight into the floor.
+  The overhead is measured off a THROWAWAY `GtkScrolledWindow` instead: an unrooted one never takes the
+  `.overlay-indicator` class, so its bar reports the non-overlay width immediately and with no transition
+  (probed: a constant 15 in both modes, against the live bar's animated 6 ↔ 15).
+- **Linux port — ⚠️ the floor MAY now exceed 240, and that is a DELIBERATE override of the original
+  "never wider than today's 240" gate.**
+  The plan this work came from required the new floor never to exceed the 240px `size_request` it
+  replaced.
+  That gate was crossed on purpose after the measurement replaced the model: above roughly 27 EFFECTIVE
+  points (sidebar font size × desktop text scaling) the measured content minimum passes 240, and the
+  floor goes with it — so a user at 20pt under GNOME "Large Text" 1.5, or at 20pt in DejaVu Sans plus any
+  scaling, gets a minimum sidebar WIDER than they had before.
+  Accepted: the chrome physically needs that width, and whole glyphs beat a clipped badge.
+  Do NOT re-introduce a 240 ceiling anywhere — not in the policy, not in the AT-SPI scenario (whose old
+  `column.width < 240` assertion false-failed on any text-scaled desktop and was replaced, see the gate
+  bullet below).
+- **Linux port — a LAYOUT change moves the divider only; `store.sidebarWidth` stays the user's REQUEST.**
+  `captureSidebarWidth` persists a `notify::position` only when it is NOT what the current LAYOUT makes of
+  the standing request — `LinuxSidebarPolicy.persistedSidebarWidth(observed:requested:minimum:layoutMaximum:)`
+  returns `nil` otherwise — and `refreshSidebarWidthFloor` re-lays the divider out through
+  `applySidebarWidth`, i.e. at
+  `laidOutSidebarWidth(requested: store.sidebarWidth, minimum: sidebarEffectiveMinimum, layoutMaximum:)`,
+  without writing anything.
+  Both policy functions take that bound as `minimum:` and never as the content floor — the label is named
+  for the EFFECTIVE minimum on purpose, because passing `sidebarWidthFloor` to it is exactly the bug the
+  next bullets describe.
+  This is load-bearing, not tidiness: the floor rises with the sidebar font and the desktop text scale,
+  GTK clamps the divider up when it does, and writing THAT back overwrites the saved width for good —
+  nothing pulls the divider back when the floor later drops, because the store already matches it.
+  Verified end-to-end (DejaVu Sans forced through an isolated `gtk-4.0/gtk.css`, three launches over one
+  state dir): 13pt → column 220, saved 220; 20pt with a `99+` badge → column 229, saved still **220**;
+  back to 13pt → column 220 again.
+  With the write-back restored, the same run persisted 229 and the sidebar stayed 229px at 13pt forever.
+  **BOTH bounds of "what the layout makes of the request" must be the LAYOUT's own, not the sidebar
+  content's** — each leg was a real, measured drift, and each ratchets:
+  - the LOWER bound is `AppController.sidebarEffectiveMinimum`, NOT `sidebarWidthFloor`.
+    Passing the content floor read GTK's clamp up to the start child's own minimum as a DRAG, so on every
+    desktop that draws client-side window buttons (the DEFAULT — see the effective-floor bullet below) a
+    fresh window rewrote its saved width to the `AdwHeaderBar` minimum.
+    Reproduced against the real binary under Xvfb: a seeded 220 came back at the start child's own
+    minimum instead — 235 in the reference environment the effective-floor bullet below measures.
+    It is the same drift this whole bullet exists to remove, reborn at the header's number instead of the
+    old 240 `size_request`'s.
+  - the UPPER bound is GtkPaned's own `max-position`, which shrinks with the WINDOW.
+    Without it, narrowing the window past the saved width persisted the capped divider and destroyed the
+    wider request for good (measured 400 → 349 at a 350px window).
+    A fresh paned reports `max-position = G_MAXINT` (2147483647) and `min-position = 0` before its first
+    allocation — probed, NOT the 0 an earlier note claimed — so the pre-allocation state is already
+    unbounded and needs no special case.
+    The policy nonetheless ALSO reads a non-positive maximum as unbounded, which is now purely defensive
+    cover for a failed `g_object_get_property`; do not "tighten" that guard on the belief that 0 is the
+    real pre-allocation value.
+  ⚠️ **A third case is not a bound at all: when the EFFECTIVE MINIMUM exceeds the shared
+  `AppStore.sidebarWidthMax` (560), `persistedSidebarWidth` persists NOTHING.**
+  Above that the layout cannot honour ANY request, so every position it produces is an artifact rather
+  than a drag, and the two sides disagree BY CONSTRUCTION: `clampSidebarWidth` caps the layout's answer at
+  the maximum while GTK clamps the divider up to the real minimum.
+  Worked example (`LinuxPolicyTests` pins it): requested 220, effective minimum 700, GTK clamps to 700,
+  `laidOutSidebarWidth` answers 560, the 140px gap reads as a DRAG, and the clamped 560 overwrites the
+  user's 220 permanently — the same ratcheting write-back the other two legs describe, driven by the
+  shared MAXIMUM instead of the minimum.
+  `sidebarEffectiveMinimum` is a raw `gtk_widget_measure` of the start child and is NOT capped (only
+  `sidebarWidthFloor` is), so an extreme text scale, a theme, or a user `gtk.css` puts it there.
+  The guard belongs on the DISCRIMINATOR, not on `captureSidebarWidth`'s corrective `width >= minimum`
+  arm: "the layout could not honour the request" is a statement about the layout, and that arm only ever
+  sees a width already clamped below the minimum.
+  With the guard in place that arm can no longer fail, so it is a kept invariant rather than a live
+  branch — do not delete it on the strength of that, it is what keeps the corrective `set_position` off a
+  layout GTK would bounce forever.
+  The consequence to accept is that a legacy record clamped only to the shared 160 is NO LONGER rewritten
+  to the floor on load; it lays out at the floor and keeps 160 on disk, which is what "the store holds the
+  request, not the answer" means.
+  **The cap is only half the story: something must also put the width BACK when the window widens again.**
+  Not persisting the cap keeps `store.sidebarWidth` at 400, but GTK does not re-lay the divider out on its
+  own, and — the part that makes this non-obvious — it does not even emit `notify::position` for the
+  widening.
+  Probed on GTK 4.22.4: narrowing the paned allocation to 350 emits `notify::max-position` AND
+  `notify::position` (both at pos=349), while widening back to 900 emits `notify::max-position` ALONE and
+  the divider stays at 349.
+  So `buildSidebarSplit` connects `notify::max-position` to `applySidebarWidth`, the window-width
+  counterpart of the header re-apply below; without it the sidebar sits at the narrow window's cap
+  indefinitely in an idle window, which is a NEW symptom the cap introduced (the older build destroyed the
+  400 instead, trading data loss for a stuck divider).
+  **BOTH sidebar-paned notify handlers resolve the controller through `controllerForWidget(paned)`, never
+  `Unmanaged.passUnretained(self)` signal data** — the same idiom the split paned's own `onPanedPosition`
+  uses.
+  GTK emits paned notifications while a closing window unmaps, and `windowWillClose` drops the controller
+  from `gWindows` BEFORE that (the ordering `onWindowActive` already documents), so unretained signal data
+  can be dereferenced after the controller is deallocated; resolving through the live registry degrades to
+  a clean no-op.
+  It also no-ops for the seeding calls inside `AppController.init` — the paned is not parented to the
+  window until later and `gWindows[windowID]` is not assigned until init returns — which costs nothing,
+  because `applySidebarWidth` has just written the position the discriminator would compare against.
+  ⚠️ **That handler runs INSIDE GtkPaned's own `size_allocate`, so `applySidebarWidth` MUST cap itself at
+  `max-position`** (it does, through `LinuxSidebarPolicy.laidOutSidebarWidth`, which
+  `persistedSidebarWidth` shares so the two cannot disagree about what the layout's answer is).
+  **Sharing the FUNCTION is not enough — both must also pass the same `minimum:`, and that minimum is
+  `sidebarEffectiveMinimum`, never the content floor `sidebarWidthFloor`.**
+  They differ in the DEFAULT configuration, because `toolbarMode` defaults to `compact` and so shows the
+  sidebar `AdwHeaderBar`: the content floor is the 220 pin while the paned start child measures 235 in
+  the reference environment the effective-floor bullet below owns (the single home of these numbers).
+  `applySidebarWidth` shipped passing the content floor, so it laid the divider out at 220 — below the
+  minimum GTK will honour — and since `persistedSidebarWidth` reads that same `position` property back to
+  tell a drag from a layout, the 220 it had just written could only read as a DRAG.
+  Every allocation therefore manufactured a phantom drag and then cancelled it through
+  `captureSidebarWidth`'s past-the-maximum branch, which exists for an unrelated purpose: two extra
+  `set_position` and two to three re-entrant `gtk_widget_measure` per resize allocation, with the correct
+  final geometry resting on that accidental rescue.
+  Passing the effective minimum converges in a single `set_position` with no corrective round-trip;
+  verified against the real binary under Xvfb, the final geometry is byte-identical
+  (seeded 220 → column 235 saved 220; seeded 400 → 400, narrowed to 349, widened back to 400;
+  legacy 160 → column 235 with 160 still on disk).
+  A `gtk_paned_set_position` past the maximum from there is NOT re-clamped: the `queue_allocate` it
+  triggers is swallowed by the allocation already in flight, so the start child stays allocated at the
+  over-wide position — measured, an uncapped re-apply of 400 left a 400px sidebar inside a 350px paned
+  with the terminal squeezed to 0, which is worse than the bug it fixes.
+  Capped, the narrowing notify re-applies the number GTK just picked and nothing moves.
+  It cannot feed back either: a position change can never move `max-position`, which tracks only the
+  paned's allocation and its children's minimums.
+  Probed over a full narrow→widen cycle: 4 apply calls, 3 position notifies, 3 max-position notifies,
+  divider back at the request, store never rewritten.
+- **Linux port — `sidebarWidthFloor` is NOT the effective floor everywhere, because the paned start child
+  is the `AdwToolbarView`, not the scroller.**
+  The sidebar cannot narrow below
+  `max(sidebarWidthFloor, AdwHeaderBar minimum, sidebar bottom-bar minimum)` — the toolbar view's own
+  minimum is the max over its top bar, its bottom bar, and its content, and the bottom bar (the footer
+  with New Workspace / New Session / Flagged) is a real term that is easy to forget, measured 138px on
+  both decoration layouts.
+  The header term is decoration-dependent:
+  `LinuxDesktopEnvironment.hidesClientSideWindowButtons()` emits `":"` where the compositor draws the
+  window buttons (Hyprland) and `"close,minimize,maximize:"` everywhere else, including CI's X11 runner.
+  **This bullet is the SINGLE home of these measurements** — every other note and doc comment that needs
+  one points here rather than restating it, because three sites once carried three different numbers for
+  the same quantity.
+  Re-measured on GTK 4.22.4 / libadwaita 1.9.2 at text scale 1.0 in the REFERENCE environment (the CI
+  X11/CSD session: Xvfb + openbox, a fresh `HOME`, so the chrome font resolves to GTK's own default —
+  `Adwaita Sans 11`): **96px with `":"` and 235px with the three buttons**, ~46px per button.
+  The paned start child therefore measures **235** in the DEFAULT configuration, i.e.
+  `max(220 pin, 235 header, 138 bottom bar)` — confirmed twice over, by a standalone GTK probe of the same
+  widget tree and by the real binary (seeded 220 → column 235, saved 220; seeded 160 → column 235, 160
+  still on disk).
+  ⚠️ **These are environment-relative, so re-measure before trusting any absolute number here.**
+  The header term is NOT chrome-font independent, whatever an earlier revision of this bullet claimed:
+  its minimum moves ~5px per point of the DESKTOP chrome font (`gtk-font-name` — NOT the sidebar font
+  setting, which the header never sees, since `.agterm-sidebar` is on the scroller), measured
+  220 / 225 / 230 / 235 / 240px for the three buttons at 8 / 9 / 10 / 11 / 12pt.
+  It is not text-scale independent either — the `":"` header measures 96 / 106 / 121 / 146px at scale
+  1.0 / 1.25 / 1.5 / 2.0.
+  That is the likeliest origin of the 88px / 227px pair this bullet used to quote and the 225 the bullets
+  above used to: the SAME quantity measured where the chrome metrics resolved ~1.5pt smaller, not a
+  different quantity and not a different decoration layout.
+  Re-running the ORIGINAL probe today reproduces 96 / 235, so what moved was the environment, not the
+  widget tree.
+  So with the sidebar header SHOWN the sidebar bottoms out at the floor on Hyprland-style desktops and at
+  the header's minimum elsewhere; in hidden-toolbar mode the header is gone and the floor is the bound
+  everywhere.
+  Any claim of the form "X is now the single floor" is wrong.
+  That max is `AppController.sidebarEffectiveMinimum(_:)`, a `gtk_widget_measure` of the paned START CHILD,
+  and everything that has to reason about what GTK will actually DO with the divider reads it rather than
+  `sidebarWidthFloor`.
+  It is measured at `notify::position` time and deliberately NOT cached beside the floor: the header's
+  window-control minimum does not exist until the window is ROOTED, so the same measure taken from
+  `AppController.init` reports the bare size request and only the post-map one reports the real number.
+  It also tracks a mid-session header toggle a frame earlier than GtkPaned's own `min-position`, which
+  only updates on the NEXT allocation.
+  For the same reason `applyToolbarMode` calls `refreshSidebarWidthFloor` after showing or hiding the
+  header: GTK clamps the divider UP when the header appears but never pulls it back down when it goes
+  away, so without the re-apply the sidebar keeps the header's width for the rest of the session.
+- **Linux port — no `gtk_label_set_width_chars` / `gtk_editable_set_width_chars` floor, deliberately.**
+  The width the name can claim already falls out of `sidebarWidthFloor` in PIXELS, so a second floor in
+  CHARACTERS on the label is a redundant constraint that would have to be re-derived on every change to the
+  sidebar font range or the row chrome — and set too high it re-creates the very bug it guards against.
+  The rename `GtkEntry` needs nothing either: its minimum measures **18px** (natural 168) and is font-size
+  independent, because the `.agterm-sidebar label` CSS matches `label` nodes while an entry is an
+  `entry` > `text` pair — and `gtk_editable_set_width_chars` RAISES that minimum monotonically on GTK
+  4.22.4 (~8px per character, 1→26px through 6→66px), so adding one manufactures a floor it does not have.
+- **Linux port — the regression gate is the AT-SPI scenario `sidebar-narrow-clipping`**
+  (`verify_sidebar_narrow_clipping` in `agterm-linux/tests/atspi_smoke.py`), which seeds a narrow sidebar
+  through the legacy `workspaces.json` migration and then runs FOUR launches.
+  Each launch is its OWN module-level helper — `sidebar_pin_gate`, `sidebar_containment_sweep`,
+  `sidebar_measurement_gate`, `sidebar_window_width_gate` — with `verify_sidebar_narrow_clipping` left
+  as the seed-then-call orchestrator that carries the scenario docstring;
+  the shared containment helpers (`sidebar_column_now`, `sidebar_settled`, `sidebar_fits`,
+  `sidebar_does_not_widen`, `sidebar_row_fits`) sit beside them rather than nested inside one launch.
+  Launch 2 is the containment sweep: the 20pt sidebar font (the thinnest-margin configuration), one row
+  decorated at runtime, and every descendant's right edge asserted inside the column — in tree mode, for
+  the workspace header's `+` button, for the focus pill of a focused workspace, for the flagged view's
+  breadcrumb row, and for the wrapped flagged-empty hint.
+  ⚠️ **Containment ALONE is a VACUOUS check for every site whose un-truncated text still fits under
+  `AppStore.sidebarWidthMax` (560), and that is most of them.**
+  The floor FOLLOWS the measured content, so a label that lost its ellipsize WIDENS the column rather than
+  overflowing it, and `sidebar_fits` then passes against a column the regression itself sized.
+  Measured against the shipped binary, with a user `gtk.css` raising ONE site's minimum to 400px:
+  `.agterm-focus-pill label` took the column 220 → 450 with the pill's right edge at 408 (contained), and
+  `.agterm-sidebar label.dim-label` took it 220 → 400 with the hint's right edge at 400 (contained);
+  only `.agterm-sidebar label` at 700px, which clamps the floor at 560, produced a real overflow.
+  What survives as a genuine containment gate is therefore only the two sites whose text clears that cap:
+  the 40-character session name (~528px at 20pt plus chrome) and the ~68-character flagged breadcrumb.
+  The focus pill and the flagged-empty hint are gated on the column **NOT GROWING** instead
+  (`sidebar_does_not_widen`, against the tree-mode column captured once): correctly truncated, both are far
+  narrower than a decorated row — the pill collapses to `✕ …` plus its padding, the wrapped hint to its
+  longest WORD — so neither can move a column the rows already sized, at any font size or text scale,
+  while losing the ellipsize/wrap makes each report its whole string, which is wider than the row chrome.
+  Both gates are PROVEN to bite: dropping `gtk_label_set_ellipsize` from the pill grew the column
+  235 → 413px and dropping `gtk_label_set_wrap` from the hint grew it 235 → 354px, each failing ONLY the
+  no-growth assertion while the `sidebar_fits` call immediately before it passed.
+  The workspace header's `+` is a BACKSTOP, not a discriminator: the header name goes through the same
+  `makeNameWidget` as the row name, so the long session name is what actually gates its ellipsize.
+  It measures BOTH edges off the sidebar's own `role="scroll pane"` node: that widget IS the column (the
+  clipping boundary, so its allocation tracks the paned position), while **any node INSIDE it** — viewport,
+  content box, list box, the row's parent box — inherits the same overflow under the bug and makes the
+  assertion vacuously true.
+  Taking the left edge from it too is load-bearing, not tidiness: AT-SPI WINDOW coordinates are relative to
+  the toplevel SURFACE, which under client-side decorations includes the shadow inset, so the sidebar's
+  left edge is not reliably 0.
+  ⚠️ **It is not reliably NON-NEGATIVE either, and `window_extents` must never treat a negative origin as
+  "not yet allocated".**
+  GTK reports WINDOW coordinates relative to the toplevel's CONTENT area, which sits INSIDE the CSD resize
+  border, so under X11/CSD every leftmost widget has a negative x — measured under the Xvfb + openbox
+  session CI runs, the frame reports `x=-5` and the fully allocated 220px sidebar scroll pane reports
+  `x=-5 y=-5 w=220 h=648`.
+  A `bounds.x < 0` term in that guard therefore rejected a perfectly good box, `sidebar_column` never
+  resolved, and the scenario timed out on its very FIRST check under CI while passing on the maintainer's
+  Wayland session — the failure mode that made this branch red.
+  The SIZE alone (`width <= 1 or height <= 1`) is the whole pre-allocation test; every caller is
+  origin-relative, since `sidebar_column` picks the minimum x and `sidebar_fits` compares
+  `column.x + column.width` against `box.x + box.width`.
+  That column must be **re-read immediately before EVERY containment check**
+  (the `sidebar_column_now` helper),
+  never captured once up front: each step — decorating the row, focusing the workspace, switching to
+  flagged mode, dropping the last flag — goes through `rebuildSidebar` → `refreshSidebarWidthFloor`, which
+  re-measures and can move the divider either way, so a hoisted limit makes a NARROWING step pass
+  vacuously and a widening one false-fail with a clipping message that is not a clipping.
+  Launches 1 and 3 are the two halves of the FLOOR gate — the assertions a regression cannot satisfy by
+  moving the yardstick (launch 2 has no yardstick of its own: it measures the column against itself,
+  either at the same instant or against its own earlier value) — and **neither
+  covers the other**, because `sidebarWidthFloor` PINS the measured content minimum to
+  `AppStore.sidebarWidthDefault` and FOLLOWS it above that.
+  Launch 1 is the PIN half: nothing added to the sidebar, `column.width == 220` EXACTLY.
+  It needs two seeds to be exact on any host: `toolbarMode: hidden` (the `AdwHeaderBar`'s own minimum
+  where the compositor does not draw the window buttons — CI's layout, 235px in the reference
+  environment above — would otherwise bind instead of the floor) and the SMALLEST sidebar font
+  (its measured row minimum, 165px here and ~176px in DejaVu Sans, stays under 220 for host text
+  scaling up to ~1.75).
+  Launch 3 is the MEASUREMENT half: the same two seeds plus a user `gtk-4.0/gtk.css` under an isolated
+  `XDG_CONFIG_HOME` raising `.agterm-sidebar label` to `min-width: 300px`, then `column.width > 220` AND
+  the row contained inside it.
+  **The measurement half is not optional cover — launch 1 cannot detect a floor that stopped being
+  measured**, despite once claiming to: replacing the whole `gtk_widget_measure` with the constant 220
+  satisfies launch 1 by construction, and satisfies launch 2 as well, because this scenario's one-digit
+  badge keeps the 20pt content minimum under the pin on every font family, so the measured branch is never
+  reached there.
+  `min-width` in px rather than a font size on purpose: the raised minimum is then the same number on every
+  font family and text scale, and stays well under `AppStore.sidebarWidthMax` (560) — a floor capped by the
+  max would overflow its column and report as a clipping instead.
+  The class is on the SCROLLER, so the lever raises exactly the sidebar CONTENT the floor measures and
+  cannot widen the toolbar view's other terms.
+  **The scale CANNOT be pinned instead** — GTK 4.22.4 ignores `gtk-4.0/settings.ini` whenever a settings
+  portal or an XSETTINGS manager answers first, verified by pointing an isolated `XDG_CONFIG_HOME` at a
+  settings.ini setting `gtk-xft-dpi` AND `gtk-font-name`, which changed neither, on both backends and with
+  and without `DBUS_SESSION_BUS_ADDRESS`.
+  (A user `gtk-4.0/gtk.css` in that same isolated config dir IS honoured, which is how the font-family
+  cases above were driven end-to-end, and what launch 3 rides on.)
+  The gate deliberately asserts NO upper bound at 20pt: the old `column.width < 240` false-failed on any
+  text-scaled desktop (the app correctly floored at 243–293 and the scenario reported it as a regression),
+  and 240 is no longer a ceiling at all — see the Decision-A bullet above.
+  Launch 4 is the WINDOW-WIDTH gate for the `notify::max-position` re-apply: it patches a 400px
+  `sidebarWidth` into the per-window record the earlier launches wrote, reuses launch 1's seeds so the
+  floor is the plain 220 pin, asserts the column comes back at 400, then drives a narrow → widen cycle
+  with `window resize` and asserts it lands at 400 again.
+  Its narrow leg is CONDITIONAL and prints a SKIP when it does not take, which is not laziness: `window
+  resize` is `gtk_window_set_default_size`, and a Wayland compositor is free to ignore it for a window it
+  manages — a tiled Hyprland window keeps its tile, verified, so the cycle cannot run on the maintainer's
+  own session at all.
+  It runs under the Xvfb + openbox session `scripts/test-linux-ui.sh` builds, which is how CI executes
+  this suite, and that is where the gate is authoritative.
+  That is EXECUTED, not assumed: under a reconstructed X11 session (`dbus-run-session` + `xvfb-run`
+  `1440x900x24` + `openbox --sm-disable`, `XDG_CURRENT_DESKTOP` unset as on a GitHub runner) the leg ran
+  and printed *"the sidebar was capped to 349px by the narrow window and returned to its 400px request
+  when the window widened again"*.
+  Until the `bounds.x < 0` fix above it could NOT have run — the scenario aborted at launch 1 — so
+  `notify::max-position` had no executed coverage anywhere; do not let that claim drift back to an
+  assumption.
+  On a box where `dbus-run-session` cannot activate the a11y registry through systemd (Manjaro), the
+  script's own run dies with `agterm app not present in the AT-SPI tree`; starting
+  `/usr/lib/at-spi-bus-launcher --launch-immediately` and `/usr/lib/at-spi2-registryd` by hand inside that
+  session is what makes the reconstruction work.
+  The parts that run everywhere stay HARD: the 400px restore on launch, and a post-quit re-read of the
+  record asserting `sidebarWidth` is still 400 (cover for the cap ever being persisted again).
+  Five traps it encodes: the inside-the-scroller one above; the re-read-the-column one above; the
+  un-pinnable scale; the badge it drives is a one-digit `1`, ~30px narrower at 20pt than the `99+` worst
+  case, which is covered by widget measurement (`LinuxPolicyTests`) rather than by this scenario; and
+  driving the decorations REBUILDS the row, which GTK allocates only while the window renders — `launch()`
+  parks the window on a silent Hyprland workspace, stalling the frame clock so every rebuilt row reports a
+  zero extent and the settle polls time out, so run it locally as `env -u HYPRLAND_INSTANCE_SIGNATURE …`
+  (that one bites first, and it originates in `launch()`, which every scenario calls).
 - The sidebar is an AppKit `NSOutlineView` (`WorkspaceSidebar`, an `NSViewRepresentable`),
   not a SwiftUI `List` — chosen for native cross-workspace drag-and-drop.
   Its `@MainActor` `Coordinator` is the data source/delegate, backed by `AppStore`.

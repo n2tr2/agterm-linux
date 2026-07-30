@@ -20,6 +20,11 @@ extension AppController {
             gtk_widget_set_margin_top(W(bar), padding)
             gtk_widget_set_margin_bottom(W(bar), padding)
         }
+        // The sidebar header is a term in the paned start child's minimum, so showing or hiding it
+        // changes how narrow the divider may sit. Re-lay it out at the user's request: GTK clamps the
+        // position up when the header appears but never lowers it again when the header goes away.
+        // A no-op during `AppController.init`, which calls this before the split exists.
+        refreshSidebarWidthFloor()
     }
 
     func applyWindowTranslucency(settings: AppSettings? = nil) {

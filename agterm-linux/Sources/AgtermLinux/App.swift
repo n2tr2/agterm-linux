@@ -87,6 +87,18 @@ private let onOpen: @MainActor @convention(c) (OpaquePointer?, UnsafeMutablePoin
     // Re-push the system light/dark scheme to live surfaces whenever it changes.
     connect(adw_style_manager_get_default(), "notify::dark",
             unsafeBitCast(onColorSchemeChanged, to: GCallback.self), nil)
+    // Re-measure the sidebar whenever a desktop setting its width floor is derived from changes. GTK
+    // resolves the sidebar CSS's `pt` font size through `gtk-xft-dpi`, so toggling GNOME "Large Text"
+    // mid-session widens every row exactly like a bigger sidebar font — without this the derived width
+    // floor stayed where it was and the sidebar clipped for the rest of the session (the very symptom
+    // this window's floor prevents). `gtk-font-name` joins it because the row minimum depends on the
+    // resolved font FAMILY too, and `gtk-overlay-scrolling` because turning overlay scrolling OFF gives
+    // the sidebar scroller's vertical scrollbar real layout width, which comes straight out of the
+    // column the rows have to fit inside (see `sidebarScrollbarOverhead`).
+    for signal in ["notify::gtk-xft-dpi", "notify::gtk-font-name", "notify::gtk-overlay-scrolling"] {
+        connect(gtk_settings_get_default(), signal,
+                unsafeBitCast(onDesktopSidebarMetricsChanged, to: GCallback.self), nil)
+    }
     let ids = gLibrary.openIDs()
     let toOpen = ids.isEmpty ? [gLibrary.windows.first?.id].compactMap { $0 } : ids
     for id in toOpen { openWindow(id) }
@@ -211,6 +223,16 @@ private let onColorSchemeChanged: @MainActor @convention(c) (OpaquePointer?, Opa
         gWindows.values.first?.reloadConfig()
         for ctl in gWindows.values { ctl.rebuildSettingsForColorSchemeChange() }
     }
+}
+
+/// The desktop's text scaling, UI font, or overlay-scrolling preference changed — rebuild every sidebar
+/// so its width floor is re-measured under the new metrics. Rebuilding rather than measuring in place is
+/// what makes the measurement current: GtkSettings' own `notify` class closure runs BEFORE connected
+/// handlers, so the font map is already updated here, but fresh widgets are the one form that never
+/// reads a stale style. The overlay-scrolling leg reads no live scrollbar for the same reason — see
+/// `AppController.sidebarScrollbarOverhead`, whose measurement is deliberately transition-free.
+private let onDesktopSidebarMetricsChanged: @MainActor @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { _, _, _ in
+    MainActor.assumeIsolated { for ctl in gWindows.values { ctl.rebuildSidebar() } }
 }
 
 /// SIGTERM/SIGINT → quit the GApplication on the main loop so its "shutdown" handler (flushOnQuit) runs.

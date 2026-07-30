@@ -441,8 +441,15 @@ This only changes raw-text line breaks — the rendered markdown is identical �
 - `sidebar.md` — `NSOutlineView` sidebar: drag-reorder (sessions + workspaces),
   flagged working-set view, focus filter, scoped session nav, reconcile signal,
   persistence.
+  Plus the Linux GTK sidebar: the label sizing contract (user text ellipsizes,
+  fixed instructional text wraps, hugging trailing glyphs get nothing) and the one derived
+  `AppController.sidebarWidthFloor` that replaced the two disagreeing width minimums.
   Triggers on `WorkspaceSidebar.swift`, `SidebarDrop`/`SidebarMode`/`Reorder`,
-  and the sidebar/reorder/flagged/focus UI tests.
+  the sidebar/reorder/flagged/focus UI tests,
+  and the Linux `AppControllerSidebar*.swift`/`LinuxSidebarPolicy.swift`.
+  Read it too when touching the sidebar scroller in the hub `agterm-linux/…/AppController.swift`
+  (no second `size_request` there, ever) or the `sidebar-narrow-clipping` scenario in
+  `agterm-linux/tests/atspi_smoke.py` — neither matches a rule glob.
 - `menu-actions.md` — the `AppActions` seam: View vs Navigate menu split,
   split panes (one session two shells), session navigation, command palettes,
   Ctrl-Tab MRU switcher, inline rename, font/in-terminal-search.

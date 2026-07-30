@@ -51,6 +51,10 @@ extension AppController {
         if let provider = Self.sidebarFontProvider {
             css.withCString { gtk_css_provider_load_from_string(cast(provider), $0) }
         }
+        // The width floor is NOT refreshed here: it is measured off the live widgets, and GTK
+        // revalidates a CSS node only on the next frame, so a measure taken now would still report the
+        // OLD font size. Every caller follows this with `rebuildSidebar`, which rebuilds the labels
+        // under the new CSS and then measures — see `refreshSidebarWidthFloor`.
     }
 
     /// Whether a sidebar row interaction is live: an inline rename, or an open context menu.
@@ -89,6 +93,12 @@ extension AppController {
             if store.flaggedSessions.isEmpty {
                 if let hint = op(gtk_label_new("No flagged sessions.\nRight-click a session → Flag.")) {
                     gtk_label_set_justify(hint, GTK_JUSTIFY_CENTER)
+                    // Fixed instructional text WRAPS where a user-text label ellipsizes: truncating this to
+                    // "No flagged sessi…" would be worse than the clipping it fixes. Wrapping drops the
+                    // label's minimum width from its longest LINE to its longest WORD, which is all the
+                    // sidebar needs to shrink past it. The default PANGO_WRAP_WORD is right — it breaks at
+                    // word boundaries, never mid-word.
+                    gtk_label_set_wrap(hint, 1)
                     gtk_widget_set_margin_top(W(hint), 24)
                     gtk_widget_add_css_class(W(hint), "dim-label")
                     gtk_box_append(cast(sidebarBox), W(hint))
@@ -96,8 +106,16 @@ extension AppController {
             }
         } else {
             if let fid = store.focusedWorkspaceID, let ws = store.workspaces.first(where: { $0.id == fid }),
-               let pill = op(gtk_button_new()) {
-                "✕  \(ws.name)".withCString { gtk_button_set_label(cast(pill), $0) }
+               let pill = op(gtk_button_new()), let pillLabel = op(gtk_label_new("✕  \(ws.name)")) {
+                // The pill carries a workspace name, so it needs the same ellipsize as the row labels or
+                // it reports the whole name as its minimum width and overflows the sidebar. The label is
+                // built EXPLICITLY rather than through gtk_button_set_label + gtk_button_get_child: the
+                // internal child a button builds for a plain label is not part of GTK's contract, so a
+                // GtkLabel setter on it is the same unguarded-cast hazard makeRow's breadcrumb guard
+                // exists to avoid. A button whose child is a GtkLabel still exposes that text as its
+                // accessible name, so the AT-SPI `named(...)` lookups are unaffected.
+                gtk_label_set_ellipsize(pillLabel, PANGO_ELLIPSIZE_END)
+                gtk_button_set_child(BUTTON(pill), W(pillLabel))
                 gtk_widget_add_css_class(W(pill), "agterm-focus-pill")
                 gtk_widget_set_margin_top(W(pill), 4)
                 gtk_widget_set_margin_start(W(pill), 8)
@@ -109,6 +127,8 @@ extension AppController {
                 appendSection(ws.name, ws.sessions, workspace: ws.id, settings: settings)
             }
         }
+        // The widgets that decide how narrow the sidebar can get were just replaced — re-measure them.
+        refreshSidebarWidthFloor()
     }
 
     private func appendSection(_ title: String, _ sessions: [Session], workspace: UUID? = nil,
@@ -196,6 +216,46 @@ extension AppController {
         gtk_box_append(cast(sidebarBox), W(lb))
     }
 
+    /// A name label (session or workspace) when not renaming: a plain GtkLabel that selects on single
+    /// click (the row/header handles that) and enters rename on DOUBLE click — or a focused GtkEntry when
+    /// this id is being renamed.
+    func makeNameWidget(id: UUID, text: String, isWorkspace: Bool) -> OpaquePointer? {
+        if renaming?.id == id {
+            guard let entry = op(gtk_entry_new()) else { return nil }
+            text.withCString { gtk_editable_set_text(entry, $0) }
+            gtk_widget_set_hexpand(W(entry), 1)
+            renameEntry = entry
+            connect(entry, "activate", unsafeBitCast(onRenameCommit as @convention(c) (OpaquePointer?, gpointer?) -> Void, to: GCallback.self), RAW(entry))
+            let kc = gtk_event_controller_key_new()
+            connect(kc, "key-pressed", unsafeBitCast(onRenameKey as @convention(c) (OpaquePointer?, UInt32, UInt32, UInt32, gpointer?) -> gboolean, to: GCallback.self))
+            gtk_widget_add_controller(W(entry), kc)
+            let fc = gtk_event_controller_focus_new()
+            connect(fc, "leave", unsafeBitCast(onRenameCommit as @convention(c) (OpaquePointer?, gpointer?) -> Void, to: GCallback.self), RAW(entry))
+            gtk_widget_add_controller(W(entry), fc)
+            return entry
+        }
+        guard let label = op(gtk_label_new(text)) else { return nil }
+        gtk_label_set_xalign(label, 0)
+        gtk_widget_set_hexpand(W(label), 1)
+        // A GtkLabel with neither ellipsize nor wrap reports its WHOLE text as its minimum width, so the
+        // row could not shrink below "chrome + the entire name" and instead overflowed the sidebar's
+        // scroller — hard-cutting the name mid-glyph and pushing the status glyph, flag star, and unseen
+        // badge past the viewport edge. Ellipsizing lets the label report a small minimum, which restores
+        // the macOS contract (WorkspaceSidebar+RowRendering): the name resists compression weakly and
+        // truncates first, while the hugging trailing glyphs stay whole.
+        //
+        // END, not the MIDDLE that makePaletteRow uses: a palette title repeats with a disambiguating
+        // TAIL ("Move Session to <workspace>"), whereas a session or workspace name disambiguates at the
+        // HEAD — and END matches the macOS .byTruncatingTail treatment of the same names.
+        gtk_label_set_ellipsize(label, PANGO_ELLIPSIZE_END)
+        nameLabels[label] = (id, isWorkspace)
+        let dbl = gtk_gesture_click_new()
+        gtk_gesture_single_set_button(dbl, 1)   // left double-click only; right-click goes to the context menu
+        connect(dbl, "pressed", unsafeBitCast(onNameDoubleClick as @convention(c) (OpaquePointer?, Int32, Double, Double, gpointer?) -> Void, to: GCallback.self), RAW(label))
+        gtk_widget_add_controller(W(label), dbl)
+        return label
+    }
+
     private func makeRow(_ s: Session) -> OpaquePointer? {
         guard let row = op(gtk_list_box_row_new()), let box = op(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6)) else { return nil }
         "session-row".withCString { gtk_widget_set_name(W(row), $0) }
@@ -208,14 +268,25 @@ extension AppController {
         // The flagged row normally includes its workspace breadcrumb, but inline rename must edit only
         // the session's bare display name. Reuse the normal name widget for the active rename so the
         // entry is created and seeded without the breadcrumb.
-        let label = flaggedView && renaming?.id != s.id
+        let breadcrumb = flaggedView && renaming?.id != s.id
+        let label = breadcrumb
             ? op(gtk_label_new(LinuxSidebarPolicy.flaggedRowLabel(for: s, in: store)))
             : makeNameWidget(id: s.id, text: s.displayName, isWorkspace: false)
         gtk_widget_set_hexpand(W(label), 1)
         gtk_widget_set_margin_top(W(label), 4)
         gtk_widget_set_margin_bottom(W(label), 4)
         gtk_widget_set_margin_start(W(label), 4)
-        if flaggedView { gtk_label_set_xalign(label, 0) }
+        // Guard on the FULL condition that chose the breadcrumb, not the weaker `flaggedView`: renaming a
+        // session while in flagged view takes the makeNameWidget branch, which hands back a GtkEntry, and
+        // a GtkLabel setter on it raises a GTK critical (assertion 'GTK_IS_LABEL (self)' failed).
+        if breadcrumb {
+            gtk_label_set_xalign(label, 0)
+            // Same ellipsize rationale as makeNameWidget, and END even though the breadcrumb's
+            // "<session>  —  <workspace>" has the palette's disambiguating-tail shape: the flagged view is
+            // already workspace-scoped in intent, so the session name at the HEAD is what identifies the
+            // row, and the workspace tail is the part that can be given up first.
+            gtk_label_set_ellipsize(label, PANGO_ELLIPSIZE_END)
+        }
         gtk_box_append(cast(box), W(label))
         if let icon = Self.statusIcon(s.agentIndicator.status), let glyph = op(gtk_image_new_from_icon_name(icon)) {
             if let cls = Self.statusColorClass(s.agentIndicator.status) { gtk_widget_add_css_class(W(glyph), cls) }

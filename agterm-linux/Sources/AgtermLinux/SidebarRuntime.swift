@@ -73,6 +73,8 @@ final class SidebarRuntime {
     let blinkPhase = BlinkPhaseCoordinator()
     var syncGate = SidebarSyncGate()
     var metadataRefresh = SidebarMetadataRefreshGate()
+    var reveal = SidebarRevealState()
+    let scrollRetry = SidebarScrollRetryCoordinator()
 }
 
 /// Which rows the next accessible-selection re-publish covers. Arming supersedes a pending job, so the

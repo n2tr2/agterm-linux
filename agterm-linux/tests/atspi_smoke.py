@@ -1513,6 +1513,214 @@ def verify_upstream_control_parity(env):
         )
         assert workspace_node().get("collapsed"), "workspace.collapse did not update tree read-back"
 
+        # Selecting a session inside the COLLAPSED workspace reveals its row without persisting.
+        reveal_id = control_json(
+            env, "session", "new", "--workspace", workspace_id, "--name", "reveal-target",
+            "--no-select", "--window", window_id, "--json",
+        )["result"]["id"]
+
+        def reveal_session():
+            return next(
+                session for workspace in window_tree(env, window_id)["workspaces"]
+                for session in workspace["sessions"] if session["id"] == reveal_id
+            )
+
+        # Waiting for the model first is what keeps the absence check below from passing vacuously
+        # against a create the host has not applied yet.
+        wait_for(reveal_session, "the background create never reached the collapsed workspace")
+        assert not poll(lambda: sidebar_session_row(app, "reveal-target") is not None, timeout=0.8), (
+            "a --no-select create into a collapsed workspace rendered its row without a selection"
+        )
+        control_json(env, "session", "select", "--target", reveal_id,
+                     "--window", window_id, "--json")
+        wait_for(
+            lambda: row_selected(app, "reveal-target"),
+            "selecting a session inside the collapsed workspace did not reveal its row",
+        )
+        assert workspace_node().get("collapsed"), "the reveal persisted the workspace expansion"
+
+        # The palette TITLE is the only user-visible read-back of the expansion mirror: it can say
+        # "Collapse Workspace" at all only once the revealed workspace reaches `noteSidebarExpansion`,
+        # and running the row proves the toggle inverts the EFFECTIVE state rather than the persisted
+        # one, which is already false and would make the write a no-op.
+        run_palette_action(app, process.pid, None, "Collapse Workspace")
+        wait_for(
+            lambda: sidebar_session_row(app, "reveal-target") is None,
+            "Collapse Workspace did not fold the revealed workspace back",
+        )
+        assert workspace_node().get("collapsed"), (
+            "Collapse Workspace on a revealed workspace lost the persisted collapsed flag"
+        )
+        # `Collapse Workspace` and `Collapse Workspaces` score alike and produce the same outcome here;
+        # only the bulk row would fold the FIRST workspace too, so this is what pins the singular toggle.
+        assert not next(
+            workspace for workspace in window_tree(env, window_id)["workspaces"]
+            if workspace["id"] == initial_workspace
+        ).get("collapsed"), "the palette ran Collapse Workspaces, not the singular toggle"
+
+        # The reveal is gated on the SELECTION changing, so a later sync pass for the same selected
+        # session must not reopen what the user just collapsed under it.
+        control_json(env, "session", "status", "blocked", "--target", reveal_id,
+                     "--window", window_id, "--json")
+        wait_for(
+            lambda: reveal_session().get("status") == "blocked",
+            "the status post never reached the hidden revealed session",
+        )
+        assert not poll(lambda: sidebar_session_row(app, "reveal-target") is not None, timeout=0.8), (
+            "a status sync re-revealed the workspace collapsed under its still-selected session"
+        )
+        control_json(
+            env, "workspace", "expand", "--target", workspace_id,
+            "--window", window_id, "--json",
+        )
+        wait_for(
+            lambda: row_selected(app, "reveal-target"),
+            "workspace.expand did not bring the revealed session's row back",
+        )
+        # Restore the collapsed flag the relaunch assertion below reads.
+        control_json(
+            env, "workspace", "collapse", "--target", workspace_id,
+            "--window", window_id, "--json",
+        )
+        wait_for(lambda: workspace_node().get("collapsed"),
+                 "the reveal leg left the parity workspace expanded")
+
+        # A workspace collapsed MID-SESSION is the case a row's own height cannot catch: GTK zeroes the
+        # hidden LIST BOX's size on hide but leaves its rows' pre-collapse geometry alone, so a scroll
+        # that runs before the re-shown list box lays out lands where the row USED to be. Rows inserted
+        # before the target while it is folded are the displacement. SELECTED or SHOWING cannot tell a
+        # row scrolled to its stale position from one scrolled into view; vertical containment in the
+        # sidebar column can. Measured limit: with the list-box term disabled this leg still passed under
+        # Xvfb, and every attempt-0 probe on a mapped row read a positive list box, so it is geometry
+        # smoke coverage, not a discriminating regression for the pre-layout scroll.
+        def box_text(box):
+            return "unallocated" if box is None else f"y={box.y} h={box.height}"
+
+        def row_box(name):
+            row = sidebar_session_row(app, name)
+            return window_extents(row) if row else None
+
+        def row_contained(name):
+            box, column = row_box(name), sidebar_column(app)
+            return bool(box and column
+                        and box.y >= column.y - SIDEBAR_EDGE_SLACK
+                        and box.y + box.height <= column.y + column.height + SIDEBAR_EDGE_SLACK)
+
+        def row_outside(name):
+            box, column = row_box(name), sidebar_column(app)
+            return bool(box and column) and not row_contained(name)
+
+        def assert_buried_row_contained(message):
+            assert poll(lambda: row_contained("buried-target"), timeout=6), (
+                f"{message}: row [{box_text(row_box('buried-target'))}] against column "
+                f"[{box_text(sidebar_column(app))}]"
+            )
+
+        def add_sessions(count, label, *placement):
+            for index in range(count):
+                control_json(
+                    env, "session", "new", *placement, "--name", f"{label}-{index:02d}",
+                    "--no-select", "--window", window_id, "--json",
+                )
+
+        def buried_workspace_count():
+            return len(workspace_node()["sessions"])
+
+        buried_id = control_json(
+            env, "session", "new", "--workspace", workspace_id, "--name", "buried-target",
+            "--no-select", "--window", window_id, "--json",
+        )["result"]["id"]
+        add_sessions(30, "filler", "--workspace", initial_workspace)
+        control_json(
+            env, "workspace", "expand", "--target", workspace_id,
+            "--window", window_id, "--json",
+        )
+        wait_for(lambda: row_box("buried-target"),
+                 "the buried row never allocated inside the expanded workspace")
+        # Measured, not assumed: the leg is only a test while the buried row starts OUT of the column,
+        # which takes a sidebar that overflows the runner's screen.
+        for round_ in range(3):
+            if poll(lambda: row_outside("buried-target"), timeout=1):
+                break
+            add_sessions(10, f"filler-{round_}", "--workspace", initial_workspace)
+        assert row_outside("buried-target"), (
+            f"the sidebar never overflowed: row [{box_text(row_box('buried-target'))}] against column "
+            f"[{box_text(sidebar_column(app))}]"
+        )
+        control_json(
+            env, "workspace", "collapse", "--target", workspace_id,
+            "--window", window_id, "--json",
+        )
+        wait_for(lambda: sidebar_session_row(app, "buried-target") is None,
+                 "workspace.collapse left the buried row in the accessibility tree")
+        # `--before` takes its workspace from the anchor, so it cannot be paired with `--workspace`.
+        expected = buried_workspace_count() + 6
+        add_sessions(6, "shifted", "--before", buried_id)
+        wait_for(lambda: buried_workspace_count() == expected,
+                 "the displacement inserts never reached the folded workspace")
+        control_json(env, "session", "select", "--target", buried_id,
+                     "--window", window_id, "--json")
+        wait_for(lambda: row_selected(app, "buried-target"),
+                 "selecting the buried session did not reveal its row")
+        assert_buried_row_contained(
+            "revealing a session buried in a workspace collapsed mid-session left its row scrolled to "
+            "its pre-collapse position"
+        )
+
+        # The bulk arm takes the same show-then-scroll pass: `sidebar.collapse` reopens the ACTIVE
+        # workspace and then re-syncs the selection. Enough displacement that the workspace overflows
+        # on its own, since folding every other one leaves nothing else to scroll past.
+        control_json(
+            env, "workspace", "collapse", "--target", workspace_id,
+            "--window", window_id, "--json",
+        )
+        wait_for(lambda: sidebar_session_row(app, "buried-target") is None,
+                 "workspace.collapse under the selected buried session did not fold its row away")
+        expected = buried_workspace_count() + 30
+        add_sessions(30, "shifted-again", "--before", buried_id)
+        wait_for(lambda: buried_workspace_count() == expected,
+                 "the second displacement never reached the folded workspace")
+        assert not poll(lambda: sidebar_session_row(app, "buried-target") is not None, timeout=0.8), (
+            "inserting rows under the still-selected buried session re-revealed the workspace collapsed "
+            "over it"
+        )
+        assert workspace_node().get("active"), (
+            "the buried session's workspace is not the active one, so sidebar.collapse would fold it too"
+        )
+        control_json(env, "sidebar", "collapse", "--window", window_id, "--json")
+
+        def initial_workspace_node():
+            return next(
+                workspace for workspace in window_tree(env, window_id)["workspaces"]
+                if workspace["id"] == initial_workspace
+            )
+
+        wait_for(
+            lambda: initial_workspace_node().get("collapsed") and not workspace_node().get("collapsed"),
+            "sidebar.collapse did not fold the first workspace and reopen the active one",
+        )
+        assert_buried_row_contained(
+            "sidebar.collapse reopening the active workspace left the selected buried row scrolled to "
+            "its pre-collapse position"
+        )
+        assert row_outside("reveal-target"), (
+            f"the reopened workspace fits the column, so containment proved nothing: first row "
+            f"[{box_text(row_box('reveal-target'))}] against column [{box_text(sidebar_column(app))}]"
+        )
+        # Put back what the legs below read: the first workspace open, the parity one folded.
+        control_json(
+            env, "workspace", "expand", "--target", initial_workspace,
+            "--window", window_id, "--json",
+        )
+        control_json(
+            env, "workspace", "collapse", "--target", workspace_id,
+            "--window", window_id, "--json",
+        )
+        wait_for(
+            lambda: workspace_node().get("collapsed") and not initial_workspace_node().get("collapsed"),
+            "the mid-session collapse leg left the workspaces in the wrong expansion state",
+        )
+
         restore_line = "printf restored-by-parity-hook"
         control_json(
             env, "session", "restore", restore_line, "--target", initial_session,
@@ -1574,7 +1782,8 @@ def verify_upstream_control_parity(env):
             "restore override did not survive relaunch"
         )
         assert persisted_held.get("commandWait"), "command wait state did not survive relaunch"
-        print("OK: v0.24 split axes, overlay I/O, cursor, workspace navigation, and persistence round-trip")
+        print("OK: v0.24 split axes, overlay I/O, cursor, workspace navigation, collapsed-workspace "
+              "reveal, and persistence round-trip")
     except AssertionError:
         describe_tree(app)
         raise

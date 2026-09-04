@@ -178,6 +178,12 @@ paths:
   the same persist-then-notify path as `workspace.collapse`/`.expand`. Scope notifications by the target `AppStore` object so only that window's Coordinator acts.
   Both no-op in flagged mode. Menus/palette target frontmost; `sidebar.expand`/`sidebar.collapse` resolve
   `--window` and can target background windows.
+- The singular toggle and its palette title read `AppStore.isCurrentWorkspaceCollapsed`, which answers
+  from `sidebarExpandedWorkspaceIDs` whenever the sidebar is visible.
+  Both frontends mirror every workspace into it, not only rendered rows
+  (`WorkspaceSidebar.swift:499-500`), so a current workspace the focus filter hid — which
+  `currentWorkspaceID`'s unfiltered `workspaces.last` fallback can name — still reads its reveal
+  instead of pinning the toggle at "Expand Workspace".
 
 ## Persistence
 
@@ -192,6 +198,12 @@ paths:
 - Persist only genuine user toggles through per-workspace `setWorkspaceExpanded` or one
   `setWorkspacesExpanded` save. Wrap programmatic expansion/collapse during restore, rebuild, selection
   reveal, and sole-focus force expansion in `suppressExpansionPersist`.
+- The GTK counterpart of `suppressExpansionPersist` is a positive-only transient overlay over
+  `Workspace.isExpanded` (`agterm-linux/docs/sidebar.md`), sufficient because every Linux visual collapse
+  is a persisted action.
+- Linux diverges on the reveal gate: flagged mode leaves it unchanged instead of advancing it, so the trip
+  back to tree view re-reveals the selected session's owner.
+  Accepted cost: a collapse the user made IN tree view is undone by a flagged round trip, which macOS keeps.
 - Force expansion only for a sole focused workspace. For a multi-workspace set, repeatedly expanding
   every member after tree changes would undo deliberate collapses and diverge from `tree` read-back.
   Revealing a session may expand visually without changing disk state; launch still reveals the active

@@ -523,23 +523,36 @@ struct LinuxPolicyTests {
 
 @Suite("Sidebar scroll-into-view")
 struct SidebarScrollOffsetTests {
-    @Test("a row that is not on screen is never scrolled to")
-    func unmappedRowDoesNotScroll() {
-        // A collapsed workspace keeps its rows: hidden, unallocated, and reporting their section's origin.
-        #expect(LinuxSidebarPolicy.scrollOffset(rowMapped: false, rowY: 40, rowHeight: 0,
-                                                value: 300, pageSize: 200) == nil)
-        #expect(LinuxSidebarPolicy.scrollOffset(rowMapped: false, rowY: 900, rowHeight: 24,
-                                                value: 0, pageSize: 200) == nil)
+    @Test("a row scrolls only far enough to become fully visible")
+    func rowScrollsToTheNearestEdge() {
+        #expect(LinuxSidebarPolicy.scrollOffset(rowY: 40, rowHeight: 24,
+                                                value: 100, pageSize: 200) == 40)
+        #expect(LinuxSidebarPolicy.scrollOffset(rowY: 380, rowHeight: 24,
+                                                value: 100, pageSize: 200) == 204)
+        #expect(LinuxSidebarPolicy.scrollOffset(rowY: 120, rowHeight: 24,
+                                                value: 100, pageSize: 200) == nil)
     }
 
-    @Test("a mapped row scrolls only far enough to become fully visible")
-    func mappedRowScrollsToTheNearestEdge() {
-        #expect(LinuxSidebarPolicy.scrollOffset(rowMapped: true, rowY: 40, rowHeight: 24,
-                                                value: 100, pageSize: 200) == 40)
-        #expect(LinuxSidebarPolicy.scrollOffset(rowMapped: true, rowY: 380, rowHeight: 24,
-                                                value: 100, pageSize: 200) == 204)
-        #expect(LinuxSidebarPolicy.scrollOffset(rowMapped: true, rowY: 120, rowHeight: 24,
-                                                value: 100, pageSize: 200) == nil)
+    @Test("the retry waits for the row's and its list box's allocation, and only for a bounded run of frames")
+    func scrollRetryDecisions() {
+        let bound = LinuxSidebarPolicy.scrollRetryTicks
+        func decision(mapped: Bool = true, row: Double, listBox: Double, inSidebar: Bool = true,
+                      ticks: Int) -> LinuxSidebarPolicy.ScrollRetry {
+            LinuxSidebarPolicy.scrollRetry(rowMapped: mapped, rowHeight: row, listBoxHeight: listBox,
+                                           rowInSidebar: inSidebar, ticksElapsed: ticks)
+        }
+        #expect(bound == 3)
+        #expect(decision(mapped: false, row: 0, listBox: 0, ticks: 0) == .giveUp)
+        #expect(decision(row: 24, listBox: 300, inSidebar: false, ticks: 0) == .giveUp)
+        #expect(decision(row: 0, listBox: 0, ticks: 0) == .wait)
+        #expect(decision(row: 0, listBox: 300, ticks: 0) == .wait)
+        #expect(decision(row: 24, listBox: 0, ticks: 0) == .wait)
+        #expect(decision(row: 24, listBox: 300, ticks: 0) == .scroll)
+        #expect(decision(row: 0, listBox: 0, ticks: bound - 1) == .wait)
+        #expect(decision(row: 24, listBox: 0, ticks: bound - 1) == .wait)
+        #expect(decision(row: 0, listBox: 0, ticks: bound) == .giveUp)
+        #expect(decision(row: 24, listBox: 0, ticks: bound) == .giveUp)
+        #expect(decision(row: 24, listBox: 300, ticks: bound) == .scroll)
     }
 }
 

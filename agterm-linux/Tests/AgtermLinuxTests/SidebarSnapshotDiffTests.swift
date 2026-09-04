@@ -93,6 +93,12 @@ private func moveCount(_ ops: [LayoutOp]) -> Int {
     ops.filter { if case .moveRow = $0 { return true }; return false }.count
 }
 
+/// The persisted set, which is what the effective set is with an empty reveal overlay.
+@MainActor
+private func persistedExpansion(_ store: AppStore) -> Set<UUID> {
+    Set(store.workspaces.filter(\.isExpanded).map(\.id))
+}
+
 @Suite("sidebar snapshot")
 @MainActor
 struct SidebarSnapshotTests {
@@ -106,8 +112,9 @@ struct SidebarSnapshotTests {
         let beta = Session(initialCwd: "/tmp", customName: "beta")
         let first = Workspace(name: "one", sessions: [alpha])
         let second = Workspace(name: "two", sessions: [beta], isExpanded: false)
-        let snapshot = SidebarSnapshot.desired(from: store([first, second]), settings: AppSettings(),
-                                               renaming: nil)
+        let model = store([first, second])
+        let snapshot = SidebarSnapshot.desired(from: model, settings: AppSettings(), renaming: nil,
+                                               expandedWorkspaceIDs: persistedExpansion(model))
 
         #expect(snapshot.sections.map(\.key) == [.workspace(first.id), .workspace(second.id)])
         #expect(snapshot.sections.map(\.expanded) == [true, false])
@@ -119,6 +126,62 @@ struct SidebarSnapshotTests {
         #expect(snapshot.selection == [alpha.id])
     }
 
+    @Test("the caller's expanded set overrides a persisted collapse in section and header")
+    func revealedWorkspaceReadsExpanded() {
+        let folded = Workspace(name: "two", sessions: [Session(initialCwd: "/tmp")], isExpanded: false)
+        let model = store([folded])
+        let snapshot = SidebarSnapshot.desired(from: model, settings: AppSettings(), renaming: nil,
+                                               expandedWorkspaceIDs: [folded.id])
+
+        #expect(snapshot.sections[0].expanded)
+        #expect(snapshot.sections[0].header?.expanded == true)
+    }
+
+    @Test("a session selected inside a collapsed workspace reveals it without a store write")
+    func selectionRevealsItsOwner() {
+        let buried = Session(initialCwd: "/tmp", customName: "buried")
+        let folded = Workspace(name: "folded", sessions: [buried], isExpanded: false)
+        let model = AppStore(workspaces: [folded], selectedSessionID: buried.id)
+        var reveal = SidebarRevealState()
+        let snapshot = SidebarSnapshot.desired(from: model, settings: AppSettings(), renaming: nil,
+                                               expandedWorkspaceIDs: reveal.syncedExpansion(store: model))
+
+        #expect(snapshot.sections[0].expanded)
+        #expect(snapshot.sections[0].header?.expanded == true)
+        #expect(model.workspaces[0].isExpanded == false)
+    }
+
+    @Test("flagged mode reveals nothing and the focus filter never narrows the effective set")
+    func effectiveSetSpansEveryWorkspace() {
+        let buried = Session(initialCwd: "/tmp", customName: "buried")
+        let open = Workspace(name: "open", sessions: [Session(initialCwd: "/tmp")])
+        let folded = Workspace(name: "folded", sessions: [buried], isExpanded: false)
+        let model = AppStore(workspaces: [open, folded], selectedSessionID: buried.id)
+        var reveal = SidebarRevealState()
+
+        model.setSidebarMode(.flagged)
+        #expect(reveal.syncedExpansion(store: model) == persistedExpansion(model))
+
+        model.setSidebarMode(.tree)
+        model.setFocusMembership(folded.id, member: true)
+        model.setFocusEnabled(true)
+        #expect(model.visibleWorkspaces.map(\.id) == [folded.id])
+        #expect(reveal.syncedExpansion(store: model).contains(open.id))
+    }
+
+    @Test("revealing a collapsed workspace plans one setExpanded and its header, never a rebuild")
+    func revealPlansOneExpansion() {
+        let folded = Workspace(name: "two", sessions: [Session(initialCwd: "/tmp")], isExpanded: false)
+        let model = store([folded])
+        let collapsed = SidebarSnapshot.desired(from: model, settings: AppSettings(), renaming: nil,
+                                                expandedWorkspaceIDs: persistedExpansion(model))
+        let revealed = SidebarSnapshot.desired(from: model, settings: AppSettings(), renaming: nil,
+                                               expandedWorkspaceIDs: [folded.id])
+
+        #expect(SidebarSnapshotDiff.plan(from: collapsed, to: revealed)
+            == [.setExpanded(.workspace(folded.id), true), .updateHeader(.workspace(folded.id))])
+    }
+
     @Test("the snapshot carries the whole multi-row selection, not just the active session")
     func multiRowSelection() {
         let alpha = Session(initialCwd: "/tmp", customName: "alpha")
@@ -127,7 +190,8 @@ struct SidebarSnapshotTests {
         let model = store([Workspace(name: "one", sessions: [alpha, beta, gamma])])
         model.setSidebarSelection([alpha.id, beta.id])
 
-        #expect(SidebarSnapshot.desired(from: model, settings: AppSettings(), renaming: nil)
+        #expect(SidebarSnapshot.desired(from: model, settings: AppSettings(), renaming: nil,
+                                        expandedWorkspaceIDs: persistedExpansion(model))
             .selection == [alpha.id, beta.id])
     }
 
@@ -138,7 +202,8 @@ struct SidebarSnapshotTests {
         let plain = Session(initialCwd: "/tmp", customName: "plain")
         let model = store([Workspace(name: "one", sessions: [alpha, plain])])
         model.sidebarMode = .flagged
-        let snapshot = SidebarSnapshot.desired(from: model, settings: AppSettings(), renaming: nil)
+        let snapshot = SidebarSnapshot.desired(from: model, settings: AppSettings(), renaming: nil,
+                                               expandedWorkspaceIDs: persistedExpansion(model))
 
         #expect(snapshot.sections.map(\.key) == [.flagged])
         #expect(snapshot.sections[0].header == nil)
@@ -148,7 +213,8 @@ struct SidebarSnapshotTests {
         #expect(!snapshot.sections[0].showsHint)
 
         alpha.flagged = false
-        let empty = SidebarSnapshot.desired(from: model, settings: AppSettings(), renaming: nil)
+        let empty = SidebarSnapshot.desired(from: model, settings: AppSettings(), renaming: nil,
+                                            expandedWorkspaceIDs: persistedExpansion(model))
         #expect(empty.sections[0].rows.isEmpty)
         #expect(empty.sections[0].showsHint)
     }
@@ -160,7 +226,8 @@ struct SidebarSnapshotTests {
         let model = store([first, second])
         model.setFocusMembership(second.id, member: true)
         model.setFocusEnabled(true)
-        let snapshot = SidebarSnapshot.desired(from: model, settings: AppSettings(), renaming: nil)
+        let snapshot = SidebarSnapshot.desired(from: model, settings: AppSettings(), renaming: nil,
+                                               expandedWorkspaceIDs: persistedExpansion(model))
 
         #expect(snapshot.sections.map(\.key) == [.workspace(second.id)])
         #expect(snapshot.sections[0].header?.focusMember == true)
@@ -174,7 +241,8 @@ struct SidebarSnapshotTests {
         alpha.agentIndicator = AgentIndicator(status: .active, blink: true)
         let model = store([Workspace(name: "one", sessions: [alpha])])
 
-        let plain = SidebarSnapshot.desired(from: model, settings: AppSettings(), renaming: nil)
+        let plain = SidebarSnapshot.desired(from: model, settings: AppSettings(), renaming: nil,
+                                            expandedWorkspaceIDs: persistedExpansion(model))
         let row = try #require(plain.sections[0].content[alpha.id])
         #expect(row.badge == "99+")
         #expect(row.star)
@@ -185,7 +253,8 @@ struct SidebarSnapshotTests {
         settings.notificationBadgeEnabled = false
         settings.hiddenInterfaceElements = [InterfaceElement.workspaceAddSession.rawValue]
         settings.activeStatusColorHex = "#112233"
-        let tuned = SidebarSnapshot.desired(from: model, settings: settings, renaming: nil)
+        let tuned = SidebarSnapshot.desired(from: model, settings: settings, renaming: nil,
+                                            expandedWorkspaceIDs: persistedExpansion(model))
         let tunedRow = try #require(tuned.sections[0].content[alpha.id])
         #expect(tunedRow.badge == nil)
         #expect(tunedRow.glyph?.colorHex == "#112233")
@@ -198,7 +267,8 @@ struct SidebarSnapshotTests {
         alpha.agentIndicator = AgentIndicator(status: .idle, blink: true)
         let model = store([Workspace(name: "one", sessions: [alpha])])
         let row = try #require(SidebarSnapshot.desired(
-            from: model, settings: AppSettings(), renaming: nil).sections[0].content[alpha.id])
+            from: model, settings: AppSettings(), renaming: nil,
+            expandedWorkspaceIDs: persistedExpansion(model)).sections[0].content[alpha.id])
 
         #expect(row.glyph == nil)
         #expect(!row.blink)
@@ -212,13 +282,15 @@ struct SidebarSnapshotTests {
         let model = store([workspace])
         model.sidebarMode = .flagged
         let renamed = SidebarSnapshot.desired(from: model, settings: AppSettings(),
-                                              renaming: .session(alpha.id))
+                                              renaming: .session(alpha.id),
+                                              expandedWorkspaceIDs: persistedExpansion(model))
         #expect(renamed.sections[0].content[alpha.id]?.renaming == true)
         #expect(renamed.sections[0].content[alpha.id]?.name == "alpha")
 
         model.sidebarMode = .tree
-        let header = SidebarSnapshot.desired(from: model, settings: AppSettings(),
-                                             renaming: .workspace(workspace.id)).sections[0].header
+        let header = SidebarSnapshot.desired(
+            from: model, settings: AppSettings(), renaming: .workspace(workspace.id),
+            expandedWorkspaceIDs: persistedExpansion(model)).sections[0].header
         #expect(header?.renaming == true)
     }
 }
@@ -542,8 +614,11 @@ struct SidebarSnapshotContentDiffTests {
         var settings = AppSettings()
         settings.activeStatusColorHex = "#112233"
 
-        let before = SidebarSnapshot.desired(from: store, settings: AppSettings(), renaming: nil)
-        let after = SidebarSnapshot.desired(from: store, settings: settings, renaming: nil)
+        let expanded = persistedExpansion(store)
+        let before = SidebarSnapshot.desired(from: store, settings: AppSettings(), renaming: nil,
+                                             expandedWorkspaceIDs: expanded)
+        let after = SidebarSnapshot.desired(from: store, settings: settings, renaming: nil,
+                                            expandedWorkspaceIDs: expanded)
         #expect(SidebarSnapshotDiff.plan(from: before, to: after) == [.updateRow(active.id)])
     }
 }
@@ -555,7 +630,8 @@ struct SidebarSnapshotContentDiffTests {
 @MainActor
 struct SidebarDropDiffTests {
     private func snapshot(_ store: AppStore) -> SidebarSnapshot {
-        SidebarSnapshot.desired(from: store, settings: AppSettings(), renaming: nil)
+        SidebarSnapshot.desired(from: store, settings: AppSettings(), renaming: nil,
+                                expandedWorkspaceIDs: persistedExpansion(store))
     }
 
     private func sources(_ store: AppStore, _ ids: [UUID]) -> [SidebarDrop.SessionSource] {

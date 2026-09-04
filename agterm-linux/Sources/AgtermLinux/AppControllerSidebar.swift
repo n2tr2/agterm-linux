@@ -28,9 +28,24 @@ extension AppController {
         guard let workspaceID = pendingWorkspaceToggle else { return }
         pendingWorkspaceToggle = nil
         guard Self.workspaceRowToggleEnabled(linuxSettingsStore().load().workspaceRowClickExpands) else { return }
-        let isExpanded = store.workspaces.first(where: { $0.id == workspaceID })?.isExpanded ?? true
-        store.setWorkspaceExpanded(workspaceID, expanded: !isExpanded)
+        setWorkspaceExpanded(workspaceID, expanded: !isWorkspaceEffectivelyExpanded(workspaceID))
         syncSidebar()
+    }
+
+    /// The only persisted expansion writes; both prune the overlay first, which is what makes collapsing a
+    /// revealed workspace visible — the store write is a no-op there. No toggle inverts `Workspace.isExpanded`.
+    func setWorkspaceExpanded(_ id: UUID, expanded: Bool) {
+        sidebarRuntime.reveal.clearTransient(id)
+        store.setWorkspaceExpanded(id, expanded: expanded)
+    }
+
+    func setWorkspacesExpanded(_ ids: Set<UUID>) {
+        sidebarRuntime.reveal.clearAllTransient()
+        store.setWorkspacesExpanded(ids)
+    }
+
+    func isWorkspaceEffectivelyExpanded(_ id: UUID) -> Bool {
+        sidebarRuntime.reveal.effectiveExpandedIDs(workspaces: store.workspaces).contains(id)
     }
 
     static func workspaceRowToggleEnabled(_ setting: Bool?) -> Bool { setting ?? true }

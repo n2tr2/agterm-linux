@@ -95,6 +95,7 @@ extension AppController {
         cancelLeaderDeadlineForWindowClose()
         cancelSessionSwitch()
         splitRatioRestore.cancelAll()
+        sidebarRuntime.scrollRetry.cancelAll()
         cancelFullscreenTransitionTimeout()
         setTerminalZoom(.off, target: nil)
         TerminalZoomRegistry.shared.unregister(windowID)

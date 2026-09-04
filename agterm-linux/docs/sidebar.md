@@ -3,7 +3,8 @@
 How the GTK sidebar reconciles its rows and negotiates its width.
 Nothing auto-loads this document — read it before editing `AppController.swift` (`makeNameWidget`),
 `AppControllerSidebar.swift` (`makeSessionNameWidget`, `makeRow`, `makeSection`),
-`AppControllerSidebarSync.swift`, `SidebarSnapshot.swift`, `SidebarRuntime.swift`,
+`AppControllerSidebarSync.swift`, `SidebarSnapshot.swift`, `SidebarRevealState.swift`,
+`SidebarScrollRetryCoordinator.swift`, `SidebarRuntime.swift`, `LinuxSidebarPolicy.swift`,
 `LinuxStatusGlyph.swift` (`makeStatusGlyphLabel`), `LinuxBlinkPolicy.swift`,
 `BlinkPhaseCoordinator.swift`, `LinuxThemePolicy.swift` (`windowThemeCSS`), or the sidebar scenarios in
 `agterm-linux/tests/atspi_smoke.py`.
@@ -46,13 +47,28 @@ Nothing auto-loads this document — read it before editing `AppController.swift
   The rows themselves survive, so a move into a collapsed workspace is an ordinary insert and a hidden
   row takes ordinary updates — including the header repaint that flips its disclosure arrow, which rides
   `HeaderContent.expanded` rather than the `setExpanded` op.
-  A hidden row is never scrolled to, though: it is unallocated, so `gtk_widget_compute_point` answers with
-  the section's own origin, and selecting a session inside a collapsed workspace would jerk the sidebar to
-  that header — `LinuxSidebarPolicy.scrollOffset` declines on the row's `mapped` state.
+  A hidden row is never scrolled to, though: it is unmapped or carrying stale geometry, so
+  `gtk_widget_compute_point` answers from the section's origin or the pre-collapse layout, and selecting a
+  session inside a collapsed workspace would land the sidebar on the wrong spot —
+  `LinuxSidebarPolicy.scrollRetry` declines a row that is unmapped, or whose own height or
+  its list box's reads zero, which is what a row REVEALED by an expansion reports until the frame clock
+  lays it out (a never-allocated row has no height; a list box re-shown after a mid-session collapse zeroed
+  its own on hide while its rows kept a stale one), and `scrollRowIntoView` retries on a frame-aligned
+  tick instead (`agterm-linux/docs/main-loop.md`).
   An inline rename is declined on the same ground: `beginRename` refuses an entry that did not map, since
   no `activate`, focus-leave or Escape can reach one inside a hidden list box (or a hidden sidebar), and
   `renaming` would pin `sidebarInteractionInProgress` for the rest of the session. macOS declines the
   gesture too — `SidebarRenameController.beginEditing` bails on `row(forItem:) < 0`.
+- Expansion is a snapshot INPUT, not a widget state: `SidebarRevealState.syncedExpansion` derives one
+  effective set per pass — persisted `Workspace.isExpanded` plus a positive-only transient overlay — and
+  that whole set feeds both `SidebarSnapshot.desired` and `store.noteSidebarExpansion`, which nothing
+  else on Linux populates; as on macOS, the mirror spans every workspace, not only the rendered rows.
+  A reveal inserts the owner of a newly selected session into the overlay and writes nothing, so `tree`
+  read-back and the next launch still say collapsed.
+  Row toggles invert `isWorkspaceEffectivelyExpanded` over that same overlay; Collapse/Expand Workspace and
+  its palette title both read `AppStore.isCurrentWorkspaceCollapsed`, so they cannot disagree.
+  Persisted writes all go through `AppController.setWorkspaceExpanded`/`setWorkspacesExpanded`, which prune
+  the overlay first, so a collapse after a reveal is visible.
 - A row move IS a reparent: `GtkListBox` has no reorder, so it is `gtk_list_box_remove` +
   `gtk_list_box_insert`, and the list box holds the sole reference to a sunk row — `moveSidebarRow`
   therefore holds its own `g_object_ref` across the pair.

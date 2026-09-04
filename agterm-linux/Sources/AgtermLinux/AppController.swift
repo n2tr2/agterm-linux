@@ -357,7 +357,8 @@ final class AppController {
         updateTitle()
         syncSidebar()
     }
-    /// Defer scrolling until the selected sidebar row is allocated.
+    /// Defer scrolling until the selected sidebar row is allocated; a declined attempt retries on the
+    /// frame clock (`agterm-linux/docs/main-loop.md`).
     func scrollRowIntoView(_ row: OpaquePointer) {
         guard let scroller = sidebarScroller else { return }
         _ = g_object_ref(RAW(scroller)); _ = g_object_ref(RAW(row))
@@ -366,18 +367,63 @@ final class AppController {
             guard let scroller = OpaquePointer(bitPattern: scrollerAddress),
                   let row = OpaquePointer(bitPattern: rowAddress) else { return }
             defer { g_object_unref(RAW(scroller)); g_object_unref(RAW(row)) }
-            guard gtk_widget_is_ancestor(W(row), W(self.sidebarBox)) != 0,
-                  let adj = gtk_scrolled_window_get_vadjustment(scroller) else { return }
-            var origin = graphene_point_t()
-            var translated = graphene_point_t()
-            guard gtk_widget_compute_point(W(row), W(self.sidebarBox), &origin, &translated) != 0 else { return }
-            guard let offset = LinuxSidebarPolicy.scrollOffset(
-                rowMapped: gtk_widget_get_mapped(W(row)) != 0,
-                rowY: Double(translated.y), rowHeight: Double(gtk_widget_get_height(W(row))),
-                value: gtk_adjustment_get_value(adj),
-                pageSize: gtk_adjustment_get_page_size(adj)) else { return }
-            gtk_adjustment_set_value(adj, offset)
+            // The refs above hold only these two widgets, not `sidebarBox` or the live scroller slot.
+            guard gWindows[self.windowID] === self else { return }
+            guard let generation = self.sidebarRuntime.scrollRetry.request(row: row, attempt: {
+                self.tryScrollRowIntoView(row, ticksElapsed: 0) == .wait
+            }) else { return }
+            self.scheduleSidebarScrollRetry(row: row, generation: generation)
         } }
+    }
+
+    /// One attempt, and what the caller should do about it. `.scroll` means the row was resolvable —
+    /// whether or not the adjustment actually had to move. The parent is re-resolved every attempt and must
+    /// be the section's own list box — rows are inserted straight into it, so anything else is a violated
+    /// ownership assumption, not a case to walk past.
+    private func tryScrollRowIntoView(_ row: OpaquePointer,
+                                      ticksElapsed: Int) -> LinuxSidebarPolicy.ScrollRetry {
+        guard let scroller = sidebarScroller,
+              let adj = gtk_scrolled_window_get_vadjustment(scroller),
+              let listBox = gtk_widget_get_parent(W(row)),
+              gtk_widget_get_ancestor(listBox, gtk_list_box_get_type()) == listBox,
+              gtk_widget_is_ancestor(listBox, W(sidebarBox)) != 0 else { return .giveUp }
+        let height = Double(gtk_widget_get_height(W(row)))
+        let decision = LinuxSidebarPolicy.scrollRetry(
+            rowMapped: gtk_widget_get_mapped(W(row)) != 0, rowHeight: height,
+            listBoxHeight: Double(gtk_widget_get_height(listBox)),
+            rowInSidebar: gtk_widget_is_ancestor(W(row), W(sidebarBox)) != 0,
+            ticksElapsed: ticksElapsed)
+        guard decision == .scroll else { return decision }
+        var origin = graphene_point_t()
+        var translated = graphene_point_t()
+        guard gtk_widget_compute_point(W(row), W(sidebarBox), &origin, &translated) != 0 else { return .giveUp }
+        guard let offset = LinuxSidebarPolicy.scrollOffset(
+            rowY: Double(translated.y), rowHeight: height,
+            value: gtk_adjustment_get_value(adj),
+            pageSize: gtk_adjustment_get_page_size(adj)) else { return .scroll }
+        gtk_adjustment_set_value(adj, offset)
+        return .scroll
+    }
+
+    private func scheduleSidebarScrollRetry(row: OpaquePointer, generation: UInt64) {
+        let context = SidebarScrollRetryContext(controller: self, row: row, generation: generation)
+        let callbackID = gtk_widget_add_tick_callback(
+            W(row), sidebarScrollRetryTick, Unmanaged.passRetained(context).toOpaque(),
+            releaseSidebarScrollRetryTick)
+        sidebarRuntime.scrollRetry.setCallback(callbackID, row: row, generation: generation)
+    }
+
+    /// One frame's retry. Never removes the callback itself — returning `G_SOURCE_REMOVE` is what GTK
+    /// takes as the removal, and calling the API from inside the callback would double-remove.
+    func retrySidebarScroll(_ context: SidebarScrollRetryContext) -> gboolean {
+        guard sidebarRuntime.scrollRetry.matches(row: context.row,
+                                                 generation: context.generation) else { return 0 }
+        context.ticks += 1
+        guard tryScrollRowIntoView(context.row, ticksElapsed: context.ticks) == .wait else {
+            sidebarRuntime.scrollRetry.complete(generation: context.generation)
+            return 0
+        }
+        return 1
     }
 
     func closeSession(_ id: UUID) {
@@ -554,7 +600,7 @@ final class AppController {
 
     /// Expand every workspace (show all sessions) — the palette + `sidebar.expand` control arm.
     func expandWorkspaces() {
-        store.setWorkspacesExpanded(Set(store.workspaces.map(\.id)))
+        setWorkspacesExpanded(Set(store.workspaces.map(\.id)))
         syncSidebar()
     }
 
@@ -562,15 +608,14 @@ final class AppController {
     func toggleWorkspaceCollapse(_ data: gpointer?) {
         guard let data, let wsID = workspaceDiscButtons[OpaquePointer(data)] else { return }
         cancelPendingWorkspaceToggle()
-        let isExpanded = store.workspaces.first(where: { $0.id == wsID })?.isExpanded ?? true
-        store.setWorkspaceExpanded(wsID, expanded: !isExpanded)
+        setWorkspaceExpanded(wsID, expanded: !isWorkspaceEffectivelyExpanded(wsID))
         syncSidebar()
     }
 
     /// Collapse every workspace except the active one to a header — the palette + `sidebar.collapse` arm.
     func collapseOtherWorkspaces() {
         let expanded = store.currentWorkspaceID.map { Set([$0]) } ?? []
-        store.setWorkspacesExpanded(expanded)
+        setWorkspacesExpanded(expanded)
         syncSidebar()
         syncSidebarSelection()
     }

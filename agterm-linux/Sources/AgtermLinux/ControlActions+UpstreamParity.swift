@@ -69,7 +69,7 @@ extension AppController {
         switch resolveWorkspaceResponse(target) {
         case .failure(let response): return response
         case .success(let id):
-            store.setWorkspaceExpanded(id, expanded: expanded)
+            setWorkspaceExpanded(id, expanded: expanded)
             syncSidebar()
             syncSidebarSelection()
             return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))

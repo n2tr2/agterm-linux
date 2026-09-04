@@ -79,6 +79,12 @@ paths:
   `G_SOURCE_CONTINUE` until the paned has a width), and `BlinkPhaseCoordinator`'s status-glyph pulse
   (cancelled in `windowWillClose` only AFTER the glyph maps it resolves are emptied), each owning its
   `guint` source id and its own `g_source_remove` cancel.
+- **A retry that must see a fresh ALLOCATION rides the frame clock, not another idle** —
+  `gtk_widget_add_tick_callback`, whose id is WIDGET-scoped and removed through the widget rather than with
+  `g_source_remove`.
+  `SidebarScrollRetryCoordinator` owns the sidebar's one pending request, supersedes it per navigation, and
+  is cancelled when its own row detaches, before a rebuild, and in `windowWillClose`
+  (`agterm-linux/docs/main-loop.md`).
 - **Derive a coupled delay from the constant it trails**, never re-hardcode it — `reconcileSoftClose`
   schedules at the soft-close `grace + 0.1` so it cannot drift from the finalizer it must follow.
 - **The grace window is a state, not a schedule — nothing that runs DURING it may reap a held session.**

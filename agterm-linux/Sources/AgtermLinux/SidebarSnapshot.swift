@@ -72,9 +72,12 @@ struct SidebarSnapshot: Equatable {
 extension SidebarSnapshot {
     /// Rows of a collapsed workspace are listed like any other: collapse hides the section's list box
     /// rather than detaching rows, so a hidden row still takes its updates in place.
+    /// `expandedWorkspaceIDs` is the caller's effective set, `SidebarRevealState` included; no expansion
+    /// predicate lives here.
     @MainActor
     static func desired(from store: AppStore, settings: AppSettings,
-                        renaming: AppController.RenameTarget?) -> SidebarSnapshot {
+                        renaming: AppController.RenameTarget?,
+                        expandedWorkspaceIDs: Set<UUID>) -> SidebarSnapshot {
         let flaggedView = store.sidebarMode == .flagged
         let builder = SidebarSnapshotBuilder(store: store, settings: settings,
                                              flaggedView: flaggedView, renamingID: renaming?.id)
@@ -85,14 +88,15 @@ extension SidebarSnapshot {
                                                  expanded: true, showsHint: sessions.isEmpty)]
         } else {
             snapshot.sections = store.visibleWorkspaces.map { workspace in
+                let expanded = expandedWorkspaceIDs.contains(workspace.id)
                 let header = HeaderContent(
                     name: workspace.name,
                     renaming: builder.renamingID == workspace.id,
                     focusMember: store.focusedWorkspaceIDs.contains(workspace.id),
                     addVisible: !settings.isInterfaceElementHidden(.workspaceAddSession),
-                    expanded: workspace.isExpanded)
+                    expanded: expanded)
                 return builder.section(key: .workspace(workspace.id), header: header,
-                                       sessions: workspace.sessions, expanded: workspace.isExpanded,
+                                       sessions: workspace.sessions, expanded: expanded,
                                        showsHint: false)
             }
         }

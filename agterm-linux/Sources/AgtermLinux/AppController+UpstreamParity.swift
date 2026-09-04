@@ -88,7 +88,7 @@ extension AppController {
 
     func toggleCurrentWorkspaceCollapse() {
         guard store.sidebarMode == .tree, let id = store.currentWorkspaceID else { return }
-        store.setWorkspaceExpanded(id, expanded: store.isCurrentWorkspaceCollapsed)
+        setWorkspaceExpanded(id, expanded: store.isCurrentWorkspaceCollapsed)
         syncSidebar()
     }
 }

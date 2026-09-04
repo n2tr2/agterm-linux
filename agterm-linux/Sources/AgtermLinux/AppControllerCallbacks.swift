@@ -528,3 +528,29 @@ let releaseSplitRatioRestoreTick: GDestroyNotify = { data in
     guard let data else { return }
     Unmanaged<SplitRatioRestoreTickContext>.fromOpaque(data).release()
 }
+
+// Unlike the `@convention(c)` closure above, these two are the typealiases GTK imports, which take no
+// actor annotation — so the retained context crosses as an address: GTK delivers both on the main
+// thread, and a raw pointer is not Sendable.
+let sidebarScrollRetryTick: GtkTickCallback = { _, _, data in
+    guard let data else { return 0 }
+    let address = Int(bitPattern: data)
+    return MainActor.assumeIsolated {
+        guard let raw = UnsafeMutableRawPointer(bitPattern: address) else { return gboolean(0) }
+        let context = Unmanaged<SidebarScrollRetryContext>.fromOpaque(raw).takeUnretainedValue()
+        return context.controller?.retrySidebarScroll(context) ?? 0
+    }
+}
+
+let releaseSidebarScrollRetryTick: GDestroyNotify = { data in
+    guard let data else { return }
+    let address = Int(bitPattern: data)
+    MainActor.assumeIsolated {
+        guard let raw = UnsafeMutableRawPointer(bitPattern: address) else { return }
+        let held = Unmanaged<SidebarScrollRetryContext>.fromOpaque(raw)
+        let context = held.takeUnretainedValue()
+        // GTK disposed the row, or removed the callback, before the retry resolved.
+        context.controller?.sidebarRuntime.scrollRetry.complete(generation: context.generation)
+        held.release()
+    }
+}

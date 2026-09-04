@@ -152,10 +152,18 @@ extension AppController {
         }
     }
 
+    /// The snapshot and the effective expansion it was built from — `SidebarRevealState.syncedExpansion`
+    /// owns that derivation, so the host-free tests exercise the shipped one.
+    private func prepareSidebarSnapshot(settings: AppSettings) -> (SidebarSnapshot, Set<UUID>) {
+        let expanded = sidebarRuntime.reveal.syncedExpansion(store: store)
+        return (SidebarSnapshot.desired(from: store, settings: settings, renaming: renaming,
+                                        expandedWorkspaceIDs: expanded), expanded)
+    }
+
     private func runSidebarSyncPass(force: Bool, preferMoving: Set<UUID>) {
         let settings = linuxSettingsStore().load()
         guard !force else { return rebuildSidebar(settings: settings) }
-        let desired = SidebarSnapshot.desired(from: store, settings: settings, renaming: renaming)
+        let (desired, expanded) = prepareSidebarSnapshot(settings: settings)
         let ops = SidebarSnapshotDiff.plan(from: sidebarRuntime.current, to: desired,
                                            preferMoving: preferMoving)
         if ops.first == .rebuildAll { return rebuildSidebar(settings: settings) }
@@ -167,7 +175,8 @@ extension AppController {
         // insert again instead of recording a widget that is not there.
         sidebarRuntime.current = desired.without(rows: outcome.unbuiltRows,
                                                  sections: outcome.unbuiltSections)
-        finishSidebarSync(settings: settings, outcome: outcome, heldSearchEntry: heldSearchEntry)
+        finishSidebarSync(settings: settings, expanded: expanded, outcome: outcome,
+                          heldSearchEntry: heldSearchEntry)
     }
 
     /// The forced path, private to the sync engine: every row destroyed and rebuilt. Reached only when
@@ -183,6 +192,7 @@ extension AppController {
         var outcome = SidebarSyncOutcome()
         outcome.noteDetach(dismissedPopover: contextMenuPopover != nil)
         dismissContextMenu(refocus: false)
+        sidebarRuntime.scrollRetry.cancelAll()
         // Maps drop BEFORE the widgets they key, so nothing can resolve a disposed row mid-teardown.
         rowSession.removeAll()
         nameLabels.removeAll()
@@ -194,7 +204,7 @@ extension AppController {
             gtk_box_remove(cast(sidebarBox), child)
         }
 
-        let desired = SidebarSnapshot.desired(from: store, settings: settings, renaming: renaming)
+        let (desired, expanded) = prepareSidebarSnapshot(settings: settings)
         for section in desired.sections {
             guard let widgets = makeSection(section, selection: desired.selection) else { continue }
             gtk_box_append(cast(sidebarBox), W(widgets.wrapper))
@@ -205,7 +215,8 @@ extension AppController {
         sidebarRuntime.current = desired.without(
             rows: Set(desired.sections.flatMap(\.rows)).subtracting(sidebarRuntime.rows.keys),
             sections: Set(desired.sections.map(\.key)).subtracting(sidebarRuntime.sections.keys))
-        finishSidebarSync(settings: settings, outcome: outcome, heldSearchEntry: heldSearchEntry)
+        finishSidebarSync(settings: settings, expanded: expanded, outcome: outcome,
+                          heldSearchEntry: heldSearchEntry)
     }
 
     /// Ops run in emitted order against the live tree: every index is anchor-relative to the list as it
@@ -353,6 +364,11 @@ extension AppController {
     /// hosts must commit while still valid — no focus-out will fire for it, since the header row is
     /// non-focusable and its buttons take no focus on click. Returns whether a popover went down.
     private func detachGuard(_ widget: OpaquePointer) -> Bool {
+        // Only the retry whose own row is going away — an unrelated detach must not drop a live reveal.
+        if let pending = sidebarRuntime.scrollRetry.pending,
+           pending.row == widget || gtk_widget_is_ancestor(W(pending.row), W(widget)) != 0 {
+            sidebarRuntime.scrollRetry.cancelAll()
+        }
         if let entry = renameEntry,
            entry == widget || gtk_widget_is_ancestor(W(entry), W(widget)) != 0 {
             commitInlineRename(RAW(entry))
@@ -366,8 +382,9 @@ extension AppController {
 
     /// The tail BOTH passes end in — everything outside the incremental apply and outside the forced
     /// rebuild's own teardown and build loop — written once, so neither can drop a call or reorder one.
-    private func finishSidebarSync(settings: AppSettings, outcome: SidebarSyncOutcome,
-                                   heldSearchEntry: Bool) {
+    private func finishSidebarSync(settings: AppSettings, expanded: Set<UUID>,
+                                   outcome: SidebarSyncOutcome, heldSearchEntry: Bool) {
+        store.noteSidebarExpansion(expanded)
         updateWorkspaceFilterButton()
         updateDashboardStatusIndicators(settings: settings)
         updateSessionPickerStatusIcons(settings: settings)

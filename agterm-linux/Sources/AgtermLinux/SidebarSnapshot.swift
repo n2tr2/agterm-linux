@@ -291,6 +291,8 @@ enum SidebarSnapshotDiff {
     /// elements wins, which is what makes a drag move the id the user dragged rather than its neighbour.
     private static func stable<Element: Hashable>(
         _ work: [Element], target: [Element], hinted: Set<Element>) -> Set<Element> {
+        // Content-only syncs are the hot path; avoid the quadratic LIS walk when order is unchanged.
+        guard work != target else { return Set(work) }
         var position: [Element: Int] = [:]
         for (index, element) in target.enumerated() { position[element] = index }
         let items = work.compactMap { element in position[element].map { (element, $0) } }

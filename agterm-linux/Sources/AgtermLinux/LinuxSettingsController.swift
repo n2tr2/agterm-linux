@@ -30,6 +30,8 @@ extension AppController {
         guard let config = GhosttyApp.shared.buildConfig(extraLines: lines) else { return false }
         let chromeColors = GhosttyConfigTheme.colors(from: config)
         GhosttyApp.shared.currentThemeBackgroundHex = chromeColors.background
+        GhosttyApp.shared.currentThemeForegroundHex = chromeColors.foreground
+        GhosttyApp.shared.currentThemePalette = GhosttyConfigTheme.palette(from: config)
         synchronizeLiveColorScheme(side)
         // The app-level update is the single base application: pinned libghostty propagates it to
         // every surface. Each surface then reasserts only its own overlay/zoom state.
@@ -62,6 +64,7 @@ extension AppController {
             controller.applyWindowThemeColors(for: activeTheme, resolvedColors: chromeColors)
             controller.updateAllPaneDimming(windowOpacity: settings.backgroundOpacity ?? 1)
         }
+        LinuxHtmlOverlayRegistry.shared.refreshThemes()
         recordAppliedColorSchemeSide(side)
         return true
     }

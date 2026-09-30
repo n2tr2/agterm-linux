@@ -27,10 +27,13 @@ expected=(
   "agterm-linux-v${VERSION}-x86_64.tar.gz"
   "agterm-linux-v${VERSION}-x86_64.deb"
   "agterm-linux-v${VERSION}-x86_64.rpm"
-  "agterm-v${VERSION}-x86_64.AppImage"
-  "agterm-linux-v${VERSION}-SHA256SUMS"
 )
-payloads=("${expected[@]:0:4}")
+# Releases before 0.33.1 carried an AppImage. Keep their published artifact contract intact.
+if [[ "$(printf '%s\n' "$VERSION" '0.33.1' | sort -V | head -n 1)" == "$VERSION" && "$VERSION" != 0.33.1* ]]; then
+  expected+=("agterm-v${VERSION}-x86_64.AppImage")
+fi
+payloads=("${expected[@]}")
+expected+=("agterm-linux-v${VERSION}-SHA256SUMS")
 
 if [[ -n "$SOURCE" ]]; then
   [[ -d "$SOURCE" ]] || { echo "release fixture directory does not exist: $SOURCE" >&2; exit 1; }
@@ -45,16 +48,16 @@ expected_list="$WORK/expected"
 find "$DOWNLOAD" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort > "$actual_list"
 printf '%s\n' "${expected[@]}" | LC_ALL=C sort > "$expected_list"
 if ! diff -u "$expected_list" "$actual_list"; then
-  echo "release artifact set does not match the expected five files" >&2
+  echo "release artifact set does not match the expected files" >&2
   exit 1
 fi
 
-checksums="${expected[4]}"
+checksums="${expected[${#expected[@]}-1]}"
 listed="$WORK/checksum-names"
 awk 'NF { print $2 }' "$DOWNLOAD/$checksums" | sed 's/^\*//' | LC_ALL=C sort > "$listed"
 printf '%s\n' "${payloads[@]}" | LC_ALL=C sort > "$expected_list"
 if ! diff -u "$expected_list" "$listed"; then
-  echo "checksum manifest does not name exactly the four release payloads" >&2
+  echo "checksum manifest does not name exactly the release payloads" >&2
   exit 1
 fi
 (

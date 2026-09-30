@@ -23,8 +23,10 @@ final class AppController {
     let window: OpaquePointer        // AdwApplicationWindow
     let deck: OpaquePointer          // GtkOverlay (one stable overlay child per session)
     var contentBox: OpaquePointer?   // vertical box [search + deck-overlay]
-    var deckOverlay: OpaquePointer?  // GtkOverlay over the deck, hosts the floating quick panel
-    var switcherBox: OpaquePointer?  // the Ctrl-Tab MRU overlay (a centered overlay child while cycling)
+    var deckOverlay: OpaquePointer?  // window GtkOverlay over the whole split (sidebar + deck)
+    var switcherScroller: OpaquePointer?  // the Ctrl-Tab card; its parent dim is the overlay child
+    var switcherRows: [UUID: OpaquePointer] = [:]  // that card's rows, built once per cycle
+    var switcherRevealTick: guint = 0  // pending frame-clock retry revealing the highlighted row
     var toastOverlay: OpaquePointer? // AdwToastOverlay wrapping the content, for transient banners
     var bottomBar: OpaquePointer?    // the sidebar footer toolbar (compact/tall padding setting)
     var sidebarHeader: OpaquePointer? // sidebar AdwHeaderBar (hidden-toolbar mode)
@@ -37,7 +39,8 @@ final class AppController {
     var fullscreenDesired: Bool?
     var fullscreenTransitionInFlight = false
     var fullscreenTransitionTimeout: UInt32 = 0
-    let terminalZoom = TerminalZoomController(); let dashboard = DashboardController(); let dashboardRuntime = DashboardRuntime(); var zoomHost: OpaquePointer?
+    let terminalZoom = TerminalZoomController(); let dashboard = DashboardController(); let dashboardRuntime = DashboardRuntime()
+    var zoomPendingRatioRestore: Set<UUID> = []
     var zoomHeader: OpaquePointer?; var zoomTitleLabel: OpaquePointer?
     var splitToggleBtn: OpaquePointer?    // title-bar split toggle (swaps to .fill when active)
     var scratchToggleBtn: OpaquePointer?  // title-bar scratch toggle (swaps to .fill when active)
@@ -111,6 +114,7 @@ final class AppController {
     var leftOverlayWashes: [UUID: OpaquePointer] = [:]; var rightOverlayWashes: [UUID: OpaquePointer] = [:]
     var leftOverlayWashProviders: [UUID: OpaquePointer] = [:]; var rightOverlayWashProviders: [UUID: OpaquePointer] = [:]
     var floatingOverlayFrames: [UUID: OpaquePointer] = [:]  // overlay rendered as a floating sized panel
+    var htmlSessionFrames: [UUID: OpaquePointer] = [:] // subset owned by WebKit pages, not Ghostty surfaces
     var sessionPanes: [UUID: OpaquePointer] = [:]     // GtkPaned (main content) per session
     var primaryPaneHosts: [UUID: OpaquePointer] = [:] // GtkOverlay holding primary + its pane cover
     var splitPaneHosts: [UUID: OpaquePointer] = [:]   // GtkOverlay holding split + its pane cover
@@ -200,6 +204,7 @@ final class AppController {
         window = OpaquePointer(adw_application_window_new(APPW(app)))
         attachControllerContext(to: window, windowID: windowID)
         installEmptyWindowKeyController(on: window)
+        installSessionSwitchCapture(on: window)
         // restore the window's last on-screen size (Wayland: size only — the compositor owns position),
         // else the default. set BEFORE present so the window maps at the saved size.
         if let geo = library.geometry(forWindow: windowID), geo.width > 0, geo.height > 0 {
@@ -282,6 +287,7 @@ final class AppController {
         applyInterfaceElements()
         let contentToolbar = OpaquePointer(adw_toolbar_view_new())
         adw_toolbar_view_add_top_bar(contentToolbar, W(contentHeader))
+        installZoomHeader(in: contentToolbar)   // hidden until a terminal zoom swaps it for contentHeader
         let contentBox = OpaquePointer(gtk_box_new(GTK_ORIENTATION_VERTICAL, 0))
         self.contentBox = contentBox
         buildSearchBar()
@@ -554,6 +560,12 @@ final class AppController {
             let frame = OpaquePointer(gtk_frame_new(nil))
             gtk_widget_add_css_class(W(frame), "card")
             gtk_widget_add_css_class(W(frame), "agterm-quick")   // opaque backing + border, radius, shadow
+            var property = GTK_ACCESSIBLE_PROPERTY_LABEL
+            var value = GValue()
+            gtk_accessible_property_init_value(property, &value)
+            "Quick terminal".withCString { g_value_set_string(&value, $0) }
+            gtk_accessible_update_property_value(frame, 1, &property, &value)
+            g_value_unset(&value)
             gtk_widget_set_overflow(W(frame), GTK_OVERFLOW_HIDDEN)   // clip GL child to the rounded card; see LinuxQuickCardPolicy
             gtk_widget_set_halign(W(frame), GTK_ALIGN_FILL)
             gtk_widget_set_valign(W(frame), GTK_ALIGN_FILL)
@@ -562,11 +574,11 @@ final class AppController {
             quickSurface = q
             gtk_overlay_add_overlay(overlay, W(frame))
         }
-        guard let frame = quickFrame else { return }
+        guard quickFrame != nil else { return }
         quickVisible = visible
-        gtk_widget_set_visible(W(frame), visible ? 1 : 0)
+        applyQuickFrameVisibility()
         updateAllPaneDimming()
-        if visible {
+        if quickFramePresented {
             quickSurface?.grabFocus(supersedingPopoverCapture: true)
         } else {
             refocusIfStranded()

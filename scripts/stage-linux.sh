@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage the relocatable agterm-linux payload shared by tar, DEB, RPM, AppImage, and Flatpak packaging.
+# Stage the relocatable agterm-linux payload shared by tar, DEB, RPM, and Flatpak packaging.
 # Usage: scripts/stage-linux.sh DESTINATION
 set -euo pipefail
 
@@ -44,7 +44,7 @@ install -m755 "$APP/vendor/zmx/zmx" "$DEST/bin/zmx"
 cp -R "$APP_RESOURCES" "$DEST/bin/"
 
 # Bundle the non-system libraries that make the Swift app portable. GTK, libadwaita, and glibc remain
-# host dependencies in tar/DEB/RPM; the AppImage packaging pass adds its GTK stack separately.
+# host dependencies in tar/DEB/RPM.
 { ldd "$BIN"; ldd "$CTL"; } \
   | awk '/=> \// {print $3}' \
   | grep -E '/(swift|ghostty)|libghostty|swift-linux-compat' \

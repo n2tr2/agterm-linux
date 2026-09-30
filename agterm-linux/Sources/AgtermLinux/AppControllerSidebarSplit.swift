@@ -139,7 +139,7 @@ extension AppController {
     /// settings fan-out all get it.
     func applySidebarVisibility() {
         guard let paned = splitView, let sidebar = gtk_paned_get_start_child(paned) else { return }
-        gtk_widget_set_visible(sidebar, store.sidebarVisible ? 1 : 0)
+        gtk_widget_set_visible(sidebar, store.sidebarVisible && terminalZoom.target == nil ? 1 : 0)
         applySidebarWidth(paned)
         resyncBlinkPhase()   // a hidden column unmaps every row glyph, so the pulse has nothing to show
         refocusIfStranded()   // hiding the column strands an inline rename's entry
@@ -149,7 +149,7 @@ extension AppController {
     /// the divider up to the start child's minimum, or down to the window's `max-position` — is
     /// deliberately dropped; see `LinuxSidebarPolicy.persistedSidebarWidth`.
     func captureSidebarWidth(_ paned: OpaquePointer?) {
-        guard let paned, store.sidebarVisible,
+        guard let paned, store.sidebarVisible, terminalZoom.target == nil,
               let minimum = sidebarEffectiveMinimum(paned) else { return }
         let proposed = Double(gtk_paned_get_position(paned))
         guard let width = LinuxSidebarPolicy.persistedSidebarWidth(

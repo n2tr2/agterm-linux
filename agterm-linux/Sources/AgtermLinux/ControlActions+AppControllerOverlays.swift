@@ -8,6 +8,21 @@ extension AppController {
         switch resolveSessionResponse(target) {
         case .failure(let response): return response
         case .success(let id):
+            if let page = options.page {
+                if store.session(withID: id)?.remoteOverlays.slot(options.pane) != nil {
+                    return err(options.pane == nil ? "overlay already open" : PaneOverlayError.alreadyOpen)
+                }
+                let overlay = HtmlOverlay(source: page, navigation: options.navigation,
+                                          javascript: options.javascript)
+                if let failure = store.openHtmlOverlay(id, pane: options.pane, overlay: overlay,
+                                                       sizePercent: options.sizePercent,
+                                                       backgroundColor: options.backgroundColor) {
+                    return err(failure.message(pane: options.pane))
+                }
+                if options.follow { selectSession(id, userInitiated: false) }
+                reconcile()
+                return ok(id)
+            }
             if let remote = gControlServer.openRemoteOverlay(in: store, sessionID: id, options: options) {
                 return remote
             }
@@ -30,6 +45,31 @@ extension AppController {
             }
             if options.follow { selectSession(id, userInitiated: false) }
             reconcile()
+            return ok(id)
+        }
+    }
+
+    func reloadSessionOverlay(_ target: String?, window: String?, pane: OverlayPane?, current: Bool) -> ControlResponse {
+        switch resolveSessionResponse(target) {
+        case .failure(let response): return response
+        case .success(let id):
+            if let failure = LinuxHtmlOverlayRegistry.shared.reload(sessionID: id, pane: pane,
+                                                                    current: current, store: store) {
+                return err(failure.message)
+            }
+            return ok(id)
+        }
+    }
+
+    func navigateSessionOverlay(_ target: String?, window: String?, pane: OverlayPane?,
+                                navigation: HtmlNavigation) -> ControlResponse {
+        switch resolveSessionResponse(target) {
+        case .failure(let response): return response
+        case .success(let id):
+            if let failure = LinuxHtmlOverlayRegistry.shared.navigate(sessionID: id, pane: pane,
+                                                                      step: navigation, store: store) {
+                return err(failure)
+            }
             return ok(id)
         }
     }
@@ -73,6 +113,7 @@ extension AppController {
         case .failure(let response): return response
         case .success(let id):
             guard let session = store.session(withID: id) else { return err("no such session") }
+            if session.htmlCovers(pane) { return err(OverlayHtmlError.noResult) }
             if let pane {
                 if let slot = session.remoteOverlays.slot(pane), !slot.ended {
                     return err(OverlayResultError.stillRunning)

@@ -82,6 +82,9 @@ extension AppController {
     }
 
     private func overlayReadSurface(_ session: Session, pane: OverlayPane?) -> LinuxOverlayReadSurface {
+        if session.htmlCovers(pane) {
+            return .failure(ControlResponse(ok: false, error: OverlayHtmlError.noRead))
+        }
         let occupied: Bool
         let surface: GhosttySurface?
         if let pane {

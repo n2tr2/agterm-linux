@@ -58,6 +58,7 @@ extension AppController {
     /// The window is closing: capture its size for restore-on-reopen, then tear down its surfaces and
     /// drop it from the library + registry.
     func windowWillClose() {
+        LinuxHtmlOverlayRegistry.shared.releasePages(in: store)
         customCommandOrigin.invalidate()
         commitBackgroundOpacity()
         // `refocus: false` throughout: the widget tree is about to be destroyed, and the control pick's
@@ -96,7 +97,7 @@ extension AppController {
         // finalizer's teardown sweeps (see `.claude/rules/main-loop.md`).
         store.finalizeAllPendingCloses()
         cancelPendingWorkspaceToggle()
-        cancelLeaderDeadlineForWindowClose()
+        abandonLeader()
         cancelSessionSwitch()
         splitRatioRestore.cancelAll()
         sidebarRuntime.scrollRetry.cancelAll()

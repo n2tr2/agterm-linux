@@ -66,4 +66,24 @@ make_fixture
 must_fail env AGTERM_GH="$WORK/gh" AGTERM_RELEASE_DOWNLOAD_DIR="$FIXTURE" \
   AGTERM_TEST_FAIL_ASSET="${payloads[2]}" "$VERIFY" linux-v0.14.0
 
-echo "→ public release verifier accepts only the authenticated five-file release set"
+rm -rf "$FIXTURE"
+mkdir -p "$FIXTURE"
+current_payloads=(
+  agterm-linux-v0.33.1-x86_64.tar.gz
+  agterm-linux-v0.33.1-x86_64.deb
+  agterm-linux-v0.33.1-x86_64.rpm
+)
+for artifact in "${current_payloads[@]}"; do
+  printf 'fixture for %s\n' "$artifact" > "$FIXTURE/$artifact"
+done
+(
+  cd "$FIXTURE"
+  sha256sum "${current_payloads[@]}" > agterm-linux-v0.33.1-SHA256SUMS
+)
+AGTERM_GH="$WORK/gh" AGTERM_RELEASE_DOWNLOAD_DIR="$FIXTURE" \
+  "$VERIFY" linux-v0.33.1 >/dev/null
+printf 'unexpected\n' > "$FIXTURE/agterm-v0.33.1-x86_64.AppImage"
+must_fail env AGTERM_GH="$WORK/gh" AGTERM_RELEASE_DOWNLOAD_DIR="$FIXTURE" \
+  "$VERIFY" linux-v0.33.1
+
+echo "→ public release verifier accepts the authenticated historical and current artifact sets"

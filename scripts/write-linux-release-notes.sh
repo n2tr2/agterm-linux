@@ -69,15 +69,14 @@ fi
   echo
   echo "Available formats:"
   echo
-  echo "- AppImage: bundles GTK4, libadwaita, the Swift runtime, libghostty, and Ghostty resources."
   echo "- DEB: Ubuntu 24.04 / Debian 13 or newer compatible systems."
   echo "- RPM: modern Fedora-compatible systems with glibc 2.39 or newer."
-  echo "- tar.gz: relocatable payload for compatible modern distributions with GTK4 and libadwaita installed."
+  echo "- tar.gz: relocatable payload for compatible modern distributions with GTK4, libadwaita, and WebKitGTK 6.0 installed."
   echo
   echo "Verify downloads with \`agterm-linux-${VERSION}-SHA256SUMS\` or GitHub's build provenance:"
   echo
   echo '```sh'
-  echo "gh attestation verify agterm-${VERSION}-x86_64.AppImage --repo ${REPOSITORY}"
+  echo "gh attestation verify agterm-linux-${VERSION}-x86_64.tar.gz --repo ${REPOSITORY}"
   echo '```'
   echo
   echo "Source commit: \`${COMMIT}\`"

@@ -1953,4 +1953,9 @@ final class WindowLibraryTests {
         #expect(Set(log.identities) == expected)
         #expect(!expected.isEmpty)
     }
+
+    private final class Flag: @unchecked Sendable {
+        private(set) var isSet = false
+        func set() { isSet = true }
+    }
 }

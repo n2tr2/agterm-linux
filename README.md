@@ -41,7 +41,7 @@ Code layout:
 
 ### Linux feature parity and platform differences
 
-The `linux-port` branch carries the upstream v0.32.0 terminal model and control protocol, including
+The `linux-port` branch carries the upstream v0.33.1 terminal model and control protocol, including
 split/scratch/overlay terminals, Quick terminal input and read-back, terminal zoom, fullscreen,
 recently closed sessions with grouped undo, light/dark themes, configurable toolbar and sidebar text,
 recent-session and attention popovers, agent status in the multi-session dashboard, stable pane status
@@ -51,6 +51,11 @@ session context, split orientation and pane swapping, three restore modes, zmx s
 attach, and Ctrl/Shift multi-session selection with batch move, close, flag, status, and drag/drop actions.
 It also includes native session and window asks, hooks and event subscriptions, pane-aware HUDs with
 Markdown, per-pane backgrounds, cross-window attention, and managed zmx pane leadership.
+HTML files and URLs can occupy full, floating, or split-pane overlays through `agtermctl`.
+Linux renders them with WebKitGTK 6.0, including source identity, navigation, theme variables,
+load status in `tree`, and a file-manager action corresponding to macOS Show in Finder.
+The HTML view blocks file and URI-list drag or paste transfers; link drags advertised as URI lists
+are blocked too.
 Attached sessions mirror origin status, context, notifications, HUDs, asks, overlays, and split-layout
 changes through a presentation stream.
 The Linux control socket and GTK UI share these session actions, including `session lead` on a covered
@@ -182,15 +187,9 @@ A file open in the quick terminal, the window's shared scratch overlay:
 
 ### Linux
 
-Linux releases are published from this fork as AppImage, DEB, RPM, and relocatable tar artifacts.
+Linux releases are published from this fork as DEB, RPM, and relocatable tar artifacts.
 Download them from the [agterm-linux releases page](https://github.com/melonamin/agterm-linux/releases).
-
-The AppImage bundles GTK4, libadwaita, the Swift runtime, libghostty, Ghostty resources, and zmx:
-
-```sh
-chmod +x agterm-vX.Y.Z-x86_64.AppImage
-./agterm-vX.Y.Z-x86_64.AppImage
-```
+These formats use the host's WebKitGTK 6.0 package, including its web and network process helpers.
 
 Install the native package for Ubuntu 24.04 / Debian 13 or newer compatible systems:
 
@@ -204,8 +203,8 @@ On a modern Fedora-compatible system with glibc 2.39 or newer:
 sudo dnf install ./agterm-linux-vX.Y.Z-x86_64.rpm
 ```
 
-The tarball bundles the Swift runtime, libghostty, Ghostty resources, and zmx but expects GTK4 and
-libadwaita from the host:
+The tarball bundles the Swift runtime, libghostty, Ghostty resources, and zmx but expects GTK4,
+libadwaita, and WebKitGTK 6.0 from the host:
 
 ```sh
 tar xzf agterm-linux-vX.Y.Z-x86_64.tar.gz
@@ -230,7 +229,7 @@ Each row shows its status and target, and every install, update, or repair prese
 
 - **Command Line Tool** reports a DEB/RPM-owned `/usr/bin/agtermctl` as package-managed and never replaces it.
   A relocatable tar or development build can create an agterm-owned launcher at `~/.local/bin/agtermctl`.
-  AppImage mounts and Flatpak application paths are sandbox-local, so the app does not create a host launcher into either one; install a native package, extract the AppImage, or use the tar archive for a persistent CLI.
+  Flatpak application paths are sandbox-local, so the app does not create a host launcher into one; install a native package or use the tar archive for a persistent CLI.
 - **Agent Status Hooks** safely installs Claude Code, Codex, Pi, OpenCode, and shell lifecycle hooks, preserves existing settings and file modes, and reports malformed or user-owned conflicts for manual resolution.
   The Preferences action and `agtermctl integration install hooks` intentionally operate offline on host configuration.
   They do not use the control socket or add a `Command` case because requiring a running agterm instance would be less reliable and would put filesystem ownership in the wrong boundary.
@@ -249,7 +248,7 @@ The macOS upstream app exposes the equivalent one-time actions in its **Help** m
 Requirements:
 
 - Swift 6.3.2.
-- GTK4, libadwaita, libepoxy, pkg-config, git, curl, ca-certificates, and xz.
+- GTK4, libadwaita, WebKitGTK 6.0, libepoxy, pkg-config, git, curl, ca-certificates, and xz.
 - zsh, required by the shared `agtermCore` tests.
 - Zig 0.16.0 for the vendored libghostty and zmx builds.
 
@@ -278,17 +277,15 @@ cd ..
 scripts/dist-linux.sh
 ```
 
-The complete release set uses one staged payload for tar, DEB, RPM, and AppImage.
-It additionally requires nFPM, linuxdeploy with `linuxdeploy-plugin-gtk.sh`, ImageMagick, RPM tools,
-and `cpio`:
+The release set uses one staged payload for tar, DEB, and RPM.
+It additionally requires nFPM, ImageMagick, RPM tools, and `cpio`:
 
 ```sh
-scripts/package-linux.sh 0.14.0
-scripts/verify-linux-packages.sh 0.14.0
+scripts/package-linux.sh 0.33.1
+scripts/verify-linux-packages.sh 0.33.1
 ```
 
-The GitHub release workflow pins and verifies nFPM, linuxdeploy, the GTK plugin, and the AppImage
-runtime before packaging.
+The GitHub release workflow pins and verifies nFPM before packaging.
 Branch and release CI compile the GTK package in Swift 6 language mode and run the complete real GTK
 accessibility smoke suite in an isolated HOME, state directory, control socket, D-Bus session, and X display.
 
@@ -355,7 +352,7 @@ Linux releases use tags in the `linux-vX.Y.Z` namespace and are built from `linu
 If Linux-only fixes must follow an already-published upstream-matched release, use an immutable
 `linux-vX.Y.Z+linux.N` revision tag instead of moving or replacing the published tag.
 The release workflow checks out the exact existing tag, reruns shared-core tests and strict SwiftLint,
-builds and validates all four formats, then publishes the x86_64 artifacts, consolidated SHA-256
+builds and validates the release formats, then publishes the x86_64 artifacts, consolidated SHA-256
 checksums, and GitHub build-provenance attestations.
 Release notes copy the matching upstream product notes, omit its macOS installation boilerplate, and
 append a separate Linux section with formats, compatibility, verification, and source details.
@@ -365,21 +362,21 @@ Create and push the tag after the release commit is already on `linux-port`:
 ```sh
 git switch linux-port
 git pull --ff-only origin linux-port
-git tag -a linux-v0.11.0 -m "agterm-linux v0.11.0"
-git push origin linux-v0.11.0
+git tag -a linux-v0.33.1 -m "agterm-linux v0.33.1"
+git push origin linux-v0.33.1
 ```
 
 An existing tag can be rebuilt from the Actions UI or with:
 
 ```sh
-gh workflow run release-linux.yml --ref linux-port -f tag=linux-v0.11.0
+gh workflow run release-linux.yml --ref linux-port -f tag=linux-v0.33.1
 ```
 
 Verify a downloaded release with either mechanism:
 
 ```sh
-sha256sum --check agterm-linux-v0.11.0-SHA256SUMS
-gh attestation verify agterm-v0.11.0-x86_64.AppImage \
+sha256sum --check agterm-linux-v0.33.1-SHA256SUMS
+gh attestation verify agterm-linux-v0.33.1-x86_64.tar.gz \
   --repo melonamin/agterm-linux
 ```
 
@@ -723,6 +720,24 @@ By default an overlay opens on its `--target` without switching the active sessi
 `--block` runs the program in the overlay (rendering normally) and blocks until it exits, then exits with the program's status — useful in a script that needs the outcome of an interactive run. The program's output stays its own concern: a TUI writes its result to its own file (for example `revdiff --output=…`) which the script reads, while `--block` reports only the exit status (the overlay never captures stdout). `--block` can't be combined with `--wait`; `session overlay result` reports the last overlay's exit status on demand for a manual open → poll flow.
 
 By default the overlay fills the pane, drawn translucent, hiding the session beneath it. Pass `--size-percent N` (1–100) for a *floating* variant instead: an opaque, framed panel sized to N% of the pane in both dimensions and centered in it, with the session still visible around it. Useful for a small auxiliary program (a picker, a monitor) that you want floating over — not replacing — the terminal you're working in. It composes with `--block` (a blocking floating overlay). Like a full overlay it opens in the background and runs even when the target is not active; pass `--follow` to switch the user to the target as it opens.
+
+An overlay can also show a local HTML file or a web page instead of running a program:
+
+```sh
+agtermctl session overlay open --html ./report.html --cwd . --navigation --follow
+agtermctl session overlay open --url http://localhost:5173/ --navigation --js
+agtermctl session overlay reload --current
+agtermctl session overlay close
+```
+
+`--cwd` grants an HTML file access to assets within that directory; omit it for a self-contained
+page with no local file access.
+Page JavaScript is off by default and requires `--js`.
+The `--navigation` toolbar adds browser navigation and Open in Browser, plus Show in Files for local
+pages or Copy Link for URLs.
+The page's load state and current address are readable in `tree --json` under `htmlOverlays`.
+The `session overlay result`, `text`, and `copy` commands apply only to program overlays.
+The [HTML document overlay recipe](cookbook/html-doc-overlay/) contains generated-page examples.
 
 A session's terminal surface is created lazily — it does not exist until the session has been shown at least once. Injecting text into a never-shown session therefore fails with `session not realized` unless you pass `--select`, which selects the session (realizing its surface) before injecting:
 

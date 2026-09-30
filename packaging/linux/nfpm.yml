@@ -41,6 +41,7 @@ overrides:
       - libc6 (>= 2.39)
       - libgtk-4-1 (>= 4.14)
       - libadwaita-1-0 (>= 1.5)
+      - libwebkitgtk-6.0-4
       - libepoxy0
   rpm:
     depends:
@@ -48,4 +49,5 @@ overrides:
       - glibc >= 2.39
       - gtk4 >= 4.14
       - libadwaita >= 1.5
+      - webkitgtk6.0
       - libepoxy

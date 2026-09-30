@@ -35,9 +35,9 @@ paths:
   A caller naming a pane ROLE takes `focusPane(wantSplit:)`.
   The one accepted consequence is placement: a split taken after a promotion appears on the freed SIDE
   rather than beside the survivor.
-  `AppControllerZoom` is the one site that still moves a live GLArea subtree; its surface blanks on zoom
-  and stays blank after the exit (`docs/backlog/linux-zoom-blanks-the-surface.md`) — precedent to fix, not
-  to follow.
+  Terminal zoom follows the same rule: `AppControllerZoom` never moves a surface. It hides the sidebar
+  column and the content header, shows the permanent `zoomHeader` strip, presents the zoomed session's deck
+  page and hides the sibling pane host; a zoomed `.quick` card is only allocated the whole content area.
 
 ## Rendering
 

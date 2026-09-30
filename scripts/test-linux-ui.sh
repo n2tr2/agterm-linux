@@ -56,6 +56,9 @@ export NO_AT_BRIDGE=0
 export LIBGL_ALWAYS_SOFTWARE=1
 export GALLIUM_DRIVER=llvmpipe
 export MESA_LOADER_DRIVER_OVERRIDE=llvmpipe
+# WebKit's bubblewrap sandbox cannot create a user namespace inside the CI container.
+# This runner uses a disposable HOME, state directory, socket, D-Bus session, and X display.
+export WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
 # Keep GLVND on the same Mesa software path. On hosts with NVIDIA installed, Xvfb can otherwise
 # select libEGL_nvidia during GLX initialization and abort before the test session starts.
 export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json
@@ -213,6 +216,12 @@ fail_on_log_pattern -E 'Unrecognized value .*Try GDK_(DISABLE|DEBUG)=help' \
 # scoped to its own stderr window, where a library assertion cannot be mistaken for the app's.
 fail_on_log_pattern -F "assertion 'GTK_IS_WIDGET (widget)' failed" \
   "GTK typecheck assertion on a finalized widget; see $APP_LOG"
+
+# A second realize over a live surface means a GtkGLArea was moved to a new parent and its GL context is
+# gone: the pane is blank from then on and no AT-SPI assertion can see it ([[libghostty]]). The app logs it
+# from `GhosttySurface.realize()`; terminal zoom was the last site doing this, so any hit is a regression.
+fail_on_log_pattern -F "GLArea re-realized over a live surface" \
+  "a live terminal surface was re-realized (reparented) and is blank; see $APP_LOG"
 
 if [[ "$status" -ne 0 ]]; then
   cp "$LOG" "$ARTIFACT_DIR/accessibility-tree.txt"

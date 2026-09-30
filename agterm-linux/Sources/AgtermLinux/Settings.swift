@@ -10,11 +10,12 @@ extension AppController {
         let mode = linuxSettingsStore().load().effectiveToolbarMode
         let visible: gboolean = mode == .hidden ? 0 : 1
         if let sidebarHeader { gtk_widget_set_visible(W(sidebarHeader), visible) }
-        if let contentHeader { gtk_widget_set_visible(W(contentHeader), visible) }
+        let zoomed = terminalZoom.target != nil
+        if let contentHeader { gtk_widget_set_visible(W(contentHeader), visible != 0 && !zoomed ? 1 : 0) }
         if let dashboardHeader = dashboardRuntime.header {
             gtk_widget_set_visible(W(dashboardHeader), visible)
         }
-        if let zoomHeader { gtk_widget_set_visible(W(zoomHeader), visible) }
+        if let zoomHeader { gtk_widget_set_visible(W(zoomHeader), visible != 0 && zoomed ? 1 : 0) }
         if let bar = bottomBar {
             let padding: Int32 = mode == .normal ? 14 : 4
             gtk_widget_set_margin_top(W(bar), padding)

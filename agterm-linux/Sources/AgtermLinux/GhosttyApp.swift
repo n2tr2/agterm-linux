@@ -38,6 +38,8 @@ final class GhosttyApp: @unchecked Sendable {
     /// Set at launch from the persisted theme; refreshed by AppController.previewTheme on every theme change.
     var currentThemeOSC: String = ""
     var currentThemeBackgroundHex: String?
+    var currentThemeForegroundHex: String?
+    var currentThemePalette: [String] = []
     @MainActor private var appliedAppearanceSide: LinuxAppearanceSide?
 
     @MainActor func start(appearanceSide: LinuxAppearanceSide) {

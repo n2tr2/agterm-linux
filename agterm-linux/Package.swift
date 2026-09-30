@@ -21,6 +21,7 @@ let package = Package(
     ],
     targets: [
         .systemLibrary(name: "CGtk", path: "Sources/CGtk", pkgConfig: "libadwaita-1"),
+        .systemLibrary(name: "CWebKit", path: "Sources/CWebKit", pkgConfig: "webkitgtk-6.0"),
         .target(
             name: "LinuxIntegrations",
             dependencies: [.product(name: "agtermCore", package: "agtermCore")]
@@ -29,6 +30,7 @@ let package = Package(
             name: "AgtermLinux",
             dependencies: [
                 "CGtk",
+                "CWebKit",
                 "LinuxIntegrations",
                 .product(name: "agtermCore", package: "agtermCore"),
             ],

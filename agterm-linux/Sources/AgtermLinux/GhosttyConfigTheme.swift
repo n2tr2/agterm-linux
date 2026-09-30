@@ -26,6 +26,17 @@ enum GhosttyConfigTheme {
         )
     }
 
+    static func palette(from config: ghostty_config_t) -> [String] {
+        var palette = ghostty_config_palette_s()
+        let key = "palette"
+        guard key.withCString({ ghostty_config_get(config, &palette, $0, UInt(key.utf8.count)) }) else { return [] }
+        return withUnsafeBytes(of: palette.colors) { raw in
+            raw.bindMemory(to: ghostty_config_color_s.self).prefix(16).map {
+                String(format: "#%02x%02x%02x", $0.r, $0.g, $0.b)
+            }
+        }
+    }
+
     private static func color(from config: ghostty_config_t, key: String) -> RGB? {
         var color = ghostty_config_color_s()
         let found = key.withCString {

@@ -200,12 +200,13 @@ extension AppController {
         gtk_widget_set_valign(W(scroller), GTK_ALIGN_START)
         gtk_widget_set_margin_start(W(scroller), Int32(placement.left.rounded()))
         gtk_widget_set_margin_top(W(scroller), Int32(placement.marginTop.rounded()))
-        gtk_scrolled_window_set_policy(scroller, GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC)
+        // EXTERNAL, not NEVER: GTK ignores the content-width bounds under NEVER and sizes the card to its
+        // widest row, so a long cwd pushes it off center and up to the window edge.
+        gtk_scrolled_window_set_policy(scroller, GTK_POLICY_EXTERNAL, GTK_POLICY_AUTOMATIC)
         gtk_scrolled_window_set_max_content_height(scroller, Int32(placement.contentMaxHeight))
         gtk_scrolled_window_set_propagate_natural_height(scroller, 1)
         gtk_scrolled_window_set_min_content_width(scroller, width)
         gtk_scrolled_window_set_max_content_width(scroller, width)
-        gtk_scrolled_window_set_propagate_natural_width(scroller, 1)
         gtk_scrolled_window_set_child(scroller, W(rows))
         return scroller
     }

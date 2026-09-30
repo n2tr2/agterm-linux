@@ -1045,24 +1045,47 @@ def switcher_dim(app):
     return dims[0] if dims else None
 
 
-def switcher_placement_error(app, sidebar):
-    """Why the card is not where macOS puts it, or None: centered over the terminal area, 12% down.
+def reports_content_box_origin(app):
+    """True on GTK before 4.16, whose AT-SPI origin is a widget's content box while its size is the border box.
 
-    The horizontal target carries `InterfaceMetrics.panelOffset`'s clamp, which keeps the card inside the
-    window.
+    4.14's `gtk_widget_accessible_get_bounds` takes the origin from `gtk_widget_compute_point(widget, parent,
+    (0, 0))`; 4.16 moved it to `gtk_widget_compute_bounds`, the same box the size already came from.
+    `app` must be the application node: libatspi answers a child only once the application has cached it.
+    """
+    try:
+        major, minor = (int(part) for part in app.get_toolkit_version().split(".")[:2])
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return (major, minor) < (4, 16)
+
+
+# `SessionSwitcherPlacement.cardPadding` plus `cardBorder`.
+SWITCHER_CARD_CHROME = 11
+
+
+def switcher_placement_error(app, sidebar):
+    """Why the card is not where macOS puts it, or None: fitted width, centered over the terminal area, 12% down.
+
+    The width is `InterfaceMetrics.fittedPanelWidth` at the default font, and the horizontal target carries
+    `panelOffset`'s clamp, which keeps the card inside the window.
     """
     dim_node, card_node = switcher_dim(app), switcher_card(app)
     dim = window_extents(dim_node) if dim_node else None
     card = window_extents(card_node) if card_node else None
     if not dim or not card:
         return f"the switcher dim ({dim}) or card ({card}) has no extents"
+    chrome = SWITCHER_CARD_CHROME if reports_content_box_origin(app) else 0
+    card_x, card_y = card.x - chrome, card.y - chrome
     inset = sidebar.x + sidebar.width - dim.x
+    width = min(460, max(280, dim.width - inset - 32), dim.width - 32)
+    if abs(card.width - width) > 2:
+        return f"the card is {card.width}px wide, not the fitted {width}px"
     offset = max(0, min(inset / 2, (dim.width - card.width) / 2))
-    center = card.x + card.width / 2
+    center = card_x + card.width / 2
     expected = dim.x + dim.width / 2 + offset
     if abs(center - expected) > 8:
         return f"the card centers at x={center}, not over the terminal area at x={expected}"
-    top = card.y - dim.y
+    top = card_y - dim.y
     if abs(top - dim.height * 0.12) > 4:
         return f"the card starts {top}px down a {dim.height}px window, not at 12%"
     return None
@@ -6031,7 +6054,9 @@ def verify_session_switch_entry(env):
             for item in collect(app):
                 try:
                     if item.get_editable_text_iface():
-                        texts.append(item.get_text_iface().get_text(0, -1))
+                        # Not `get_text_iface().get_text(0, -1)`: libatspi 2.52 binds that to the deprecated
+                        # zero-argument Accessible.get_text, and GTK 4.14 clamps an end offset of -1 to 0.
+                        texts.append(Atspi.Text.get_text(item, 0, Atspi.Text.get_character_count(item)))
                 except Exception:
                     pass
             return texts
